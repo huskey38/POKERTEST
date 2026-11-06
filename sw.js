@@ -1,5 +1,5 @@
 // 오프라인 캐시 서비스 워커. 파일을 바꾸면 VERSION을 올려야 폰에서 새 버전으로 바뀌어요.
-const VERSION = 'holdem-calc-v9';
+const VERSION = 'holdem-calc-v10';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'];
 
 self.addEventListener('install', e => {
