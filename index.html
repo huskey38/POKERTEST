@@ -320,7 +320,8 @@ button.seat:hover{border-color:var(--acc);filter:brightness(1.2)}
  "raiseEq":{"preflop":0.62,"postflop":0.7},"minContinue":0,"mdfFactor":{"preflop":1.15,"postflop":1.25},"eqSamples":{"preflop":150,"postflop":30}}
 </script>
 <script type="application/json" id="d-frequency">
-{"temperature":0.25,"similarEV":0.05,"minFreq":0.05,"shortStackBB":12,"rangeIters":3,"rangeItersPostflop":2,"nashMaxBB":20,"nashIters":300,"confidence":{"high":3,"medium":1}}
+{"temperature":0.25,"similarEV":0.05,"minFreq":0.05,"shortStackBB":12,"rangeIters":3,"rangeItersPostflop":2,"nashMaxBB":20,"nashIters":300,
+ "solver":{"enabled":true,"turn":true,"riverBet":[0.5,1],"riverRaise":[1],"turnBet":[0.66],"turnRaise":[],"riverAfterTurnBet":[0.75],"riverAfterTurnRaise":[],"maxRaises":2,"timeMs":8000,"maxIters":3000,"targetExpl":0.005,"checkEvery":50,"minWeight":0.002,"turnSample":0},"confidence":{"high":3,"medium":1}}
 </script>
 <script type="application/json" id="d-ev">
 {"realization":{"ip":1.1,"oop":0.9},"reraiseMult":3,"sensitivity":{"low":0.7,"high":1.3}}
@@ -1131,6 +1132,173 @@ function analyzeNash(spot,street,opts={}){
 }
 const NashProvider={ id:'nash', supports(spot,street){ return !!pushFoldNode(spot,street); }, async solve(spot,street,opts={}){ const r=analyzeNash(spot,street,opts); if(!r.hand) throw new Error('내 카드 2장을 입력하세요'); return r.hand; } };
 
+
+/* ---------- 헤즈업 CFR 솔버 (리버 / 턴, DCFR) ----------
+   양쪽 레인지(콤보별 가중치)로 지금 결정 지점부터 핸드 끝까지의 게임 트리를 만들고, 반복 계산으로 균형을 찾는다.
+   - 쇼다운: 콤보를 족보 순으로 정렬해 누적합으로 한 번에 계산 (+카드 겹침 보정)
+   - 메모리: 깊이별 버퍼를 재사용, 노드에는 후회값/전략합만 저장
+   - 종료: 시간 예산 또는 균형 오차(익스플로이터빌리티)가 목표 이하 */
+function solveHU(o){
+  const t0=Date.now(), B=o.board, turn=B.length===4, EPSs=1e-9, bb=o.bb||1, r1=x=>Math.round(x*10)/10;
+  const P=[0,1].map(p=>{ const cs=o.combos[p]; return {n:cs.length,c1:Int8Array.from(cs.map(x=>x.c[0])),c2:Int8Array.from(cs.map(x=>x.c[1])),w:Float32Array.from(cs.map(x=>x.w))}; });
+  if(!P[0].n||!P[1].n) throw new Error('솔버: 레인지가 비어 있어요');
+  const key=(a,b)=>a<b?a*52+b:b*52+a, maps=P.map(X=>{ const m=new Map(); for(let i=0;i<X.n;i++) m.set(key(X.c1[i],X.c2[i]),i); return m; });
+  const same=[0,1].map(p=>Int32Array.from({length:P[p].n},(_,i)=>{ const j=maps[1-p].get(key(P[p].c1[i],P[p].c2[i])); return j===undefined?-1:j; }));
+  // 보드 변형: 리버면 1개, 턴이면 리버 카드마다 1개
+  const bset=new Set(B), V=[];
+  const mkVar=card=>{ const full=card<0?B:B.concat([card]), v={card,valid:[],rank:[],ord:[]};
+    for(let p=0;p<2;p++){ const X=P[p], val=new Uint8Array(X.n), rk=new Int32Array(X.n), idx=[];
+      for(let i=0;i<X.n;i++){ if(card>=0&&(X.c1[i]===card||X.c2[i]===card)) continue; val[i]=1; rk[i]=evaluate([X.c1[i],X.c2[i],...full]); idx.push(i); }
+      idx.sort((a,b)=>rk[a]-rk[b]); v.valid.push(val); v.rank.push(rk); v.ord.push(Int32Array.from(idx)); }
+    return v; };
+  if(!turn) V.push(mkVar(-1)); else for(let c=0;c<52;c++) if(!bset.has(c)) V.push(mkVar(c));
+  const baseValid=[new Uint8Array(P[0].n).fill(1),new Uint8Array(P[1].n).fill(1)];
+  // ---------- 게임 트리 ----------
+  const S=o.sizes, maxR=o.maxRaises??2, potRoot=o.potRoot; let nActNodes=0;
+  const build=s=>{
+    const p=s.p, q=1-p, toCall=Math.max(0,s.bets[q]-s.bets[p]), A=[];
+    if(toCall>EPSs){ A.push({kind:'fold'}); A.push({kind:'call',amt:Math.min(toCall,s.stacks[p])}); } else A.push({kind:'check'});
+    if(s.stacks[p]>toCall+EPSs&&s.stacks[q]>EPSs&&s.raises<maxR){
+      const maxTo=s.bets[p]+s.stacks[p], minTo=toCall>EPSs?s.bets[q]+Math.max(s.lastRaise,bb):bb, seen=new Set();
+      const fr=s.street==='river'?(s.afterTurn?(toCall>EPSs?S.rraise:S.rbet):(toCall>EPSs?S.raise:S.bet)):(toCall>EPSs?S.raise:S.bet);
+      for(const f of fr||[]){ const t=r1(toCall>EPSs?s.bets[q]+f*(s.pot+toCall):f*s.pot); if(t<minTo-EPSs||t>=maxTo*0.97||seen.has(t)) continue; seen.add(t); A.push({kind:toCall>EPSs?'raise':'bet',to:t}); }
+      A.push({kind:'allin',to:maxTo});
+    }
+    const node={type:'act',p,A,kids:[],n:P[p].n}; nActNodes++;
+    for(const a of A){
+      if(a.kind==='fold') node.kids.push({type:'fold',winner:q,add:s.add.slice(),v:s.v});
+      else if(a.kind==='check'){ if(s.acted[q]) node.kids.push(endStreet(s)); else { const s2=cp(s); s2.acted[p]=true; s2.p=q; node.kids.push(build(s2)); } }
+      else if(a.kind==='call'){ const s2=cp(s); put(s2,p,a.amt); const ex=s2.bets[q]-s2.bets[p]; if(ex>EPSs){ s2.bets[q]-=ex; s2.add[q]-=ex; s2.stacks[q]+=ex; s2.pot-=ex; } node.kids.push(endStreet(s2)); }
+      else { const s2=cp(s), inc=a.to-s.bets[q]; put(s2,p,a.to-s.bets[p]); s2.raises++; s2.lastRaise=Math.max(s.lastRaise,inc); s2.acted=[false,false]; s2.acted[p]=true; s2.p=q; node.kids.push(build(s2)); }
+    }
+    node.reg=new Float32Array(A.length*node.n); node.ss=new Float32Array(A.length*node.n);
+    return node;
+  };
+  const cp=s=>({street:s.street,afterTurn:s.afterTurn,v:s.v,p:s.p,bets:s.bets.slice(),stacks:s.stacks.slice(),add:s.add.slice(),raises:s.raises,lastRaise:s.lastRaise,acted:s.acted.slice(),pot:s.pot});
+  const put=(s,p,x)=>{ x=Math.min(x,s.stacks[p]); s.stacks[p]-=x; s.bets[p]+=x; s.add[p]+=x; s.pot+=x; };
+  const endStreet=s=>{
+    if(s.street==='river') return {type:'sd',add:s.add.slice(),v:s.v};
+    const kids=V.map((_,vi)=>{ if(s.stacks[0]<=EPSs||s.stacks[1]<=EPSs) return {v:vi,node:{type:'sd',add:s.add.slice(),v:vi}};
+      return {v:vi,node:build({street:'river',afterTurn:true,v:vi,p:o.oop,bets:[0,0],stacks:s.stacks.slice(),add:s.add.slice(),raises:0,lastRaise:bb,acted:[false,false],pot:s.pot})}; });
+    return {type:'chance',kids};
+  };
+  const root=build({street:turn?'turn':'river',afterTurn:false,v:turn?-1:0,p:0,bets:o.bets.slice(),stacks:o.stacks.slice(),add:[0,0],raises:o.raises||0,lastRaise:o.lastRaise||bb,acted:o.acted.slice(),pot:potRoot});
+  // ---------- 계산 ----------
+  const maxN=Math.max(P[0].n,P[1].n), pool=[], acc=new Float64Array(52), acc2=new Float64Array(52);
+  const gp=d=>pool[d]||(pool[d]={b:Array.from({length:8},()=>new Float32Array(maxN)),r:Array.from({length:8},()=>new Float32Array(maxN)),st:new Float32Array(8*maxN),tmp:new Float32Array(maxN),rr:new Float32Array(maxN),tr:new Float32Array(maxN)});
+  const compat=(t,oppR,out,valT)=>{ const X=P[t], Y=P[1-t]; acc.fill(0); let tot=0; for(let j=0;j<Y.n;j++){ const w=oppR[j]; if(w){ tot+=w; acc[Y.c1[j]]+=w; acc[Y.c2[j]]+=w; } }
+    const sm=same[t]; for(let i=0;i<X.n;i++) out[i]=valT&&!valT[i]?0:tot-acc[X.c1[i]]-acc[X.c2[i]]+(sm[i]>=0?oppR[sm[i]]:0); };
+  const terminal=(node,t,oppR,out,amts)=>{
+    const X=P[t], Y=P[1-t], vt=node.v>=0?V[node.v].valid[t]:baseValid[t];
+    compat(t,oppR,out,vt);
+    if(node.type==='fold'){ const a=amts?amts.fold(node,t):(node.winner===t?potRoot+node.add[1-t]:-node.add[t]); for(let i=0;i<X.n;i++) out[i]*=a; return; }
+    const win=amts?amts.win:potRoot+node.add[1-t], lose=amts?amts.lose:node.add[t], tie=amts?amts.tie:(potRoot+node.add[1-t]-node.add[t])/2;
+    const vv=V[node.v], oT=vv.ord[t], oO=vv.ord[1-t], rT=vv.rank[t], rO=vv.rank[1-t], W=gp(99).tmp, L=gp(99).rr;
+    let s=0, k=0; acc2.fill(0);
+    for(let a=0;a<oT.length;a++){ const i=oT[a], r=rT[i]; while(k<oO.length&&rO[oO[k]]<r){ const j=oO[k++], w=oppR[j]; if(w){ s+=w; acc2[Y.c1[j]]+=w; acc2[Y.c2[j]]+=w; } } W[i]=s-acc2[X.c1[i]]-acc2[X.c2[i]]; }
+    s=0; k=oO.length-1; acc2.fill(0);
+    for(let a=oT.length-1;a>=0;a--){ const i=oT[a], r=rT[i]; while(k>=0&&rO[oO[k]]>r){ const j=oO[k--], w=oppR[j]; if(w){ s+=w; acc2[Y.c1[j]]+=w; acc2[Y.c2[j]]+=w; } } L[i]=s-acc2[X.c1[i]]-acc2[X.c2[i]]; }
+    for(let i=0;i<X.n;i++){ if(!vt[i]){ out[i]=0; continue; } const c=out[i], w=W[i], l=L[i]; out[i]=w*win-l*lose+(c-w-l)*tie; }
+  };
+  let it=0, dPos=1, dNeg=0.5, dSum=1; const sampleK=o.chanceSample||0, srng=mulberry32(o.seed||2024);
+  const strategy=(node,avg,dst)=>{ const nA=node.A.length, n=node.n, src=avg?node.ss:node.reg;
+    for(let i=0;i<n;i++){ let z=0; for(let a=0;a<nA;a++){ const x=src[a*n+i]; if(x>0) z+=x; } if(z>0) for(let a=0;a<nA;a++){ const x=src[a*n+i]; dst[a*n+i]=x>0?x/z:0; } else for(let a=0;a<nA;a++) dst[a*n+i]=1/nA; } };
+  // mode 0: CFR 갱신, 1: 최선 대응(익스플로이터빌리티), 2: 평균 전략 평가
+  const cfv=(node,t,trR,oppR,out,d,mode,amts)=>{
+    if(node.type==='fold'||node.type==='sd'){ terminal(node,t,oppR,out,amts); return; }
+    const X=P[t], Y=P[1-t], pl=gp(d);
+    if(node.type==='chance'){
+      out.fill(0,0,X.n);
+      // 갱신(mode 0)에서는 리버 카드 일부만 무작위로 뽑아 계산(편향 없음, 비율로 보정) → 반복당 시간 단축
+      let kids=node.kids, scale=1;
+      if(mode===0&&sampleK>0&&sampleK<kids.length){ const ix=node.ix||(node.ix=kids.map((_,i)=>i)); for(let a=0;a<sampleK;a++){ const b=a+((srng()*(ix.length-a))|0), tmp=ix[a]; ix[a]=ix[b]; ix[b]=tmp; } kids=ix.slice(0,sampleK).map(i=>node.kids[i]); scale=node.kids.length/sampleK; }
+      for(const k of kids){ const vt=V[k.v].valid[t], vo=V[k.v].valid[1-t]; for(let j=0;j<Y.n;j++) pl.rr[j]=oppR[j]*vo[j]; for(let i=0;i<X.n;i++) pl.tr[i]=trR[i]*vt[i];
+        cfv(k.node,t,pl.tr,pl.rr,pl.tmp,d+1,mode,amts); for(let i=0;i<X.n;i++) out[i]+=pl.tmp[i]; }
+      const inv=scale/44; for(let i=0;i<X.n;i++) out[i]*=inv; return;
+    }
+    const p=node.p, nA=node.A.length, n=node.n, st=pl.st;
+    strategy(node,mode===2||(mode===1&&p!==t),st);
+    if(p===t){
+      for(let a=0;a<nA;a++){ const cr=pl.r[a]; for(let i=0;i<n;i++) cr[i]=trR[i]*st[a*n+i]; cfv(node.kids[a],t,cr,oppR,pl.b[a],d+1,mode,amts); }
+      for(let i=0;i<n;i++){ let v; if(mode===1){ v=-Infinity; for(let a=0;a<nA;a++) if(pl.b[a][i]>v) v=pl.b[a][i]; } else { v=0; for(let a=0;a<nA;a++) v+=st[a*n+i]*pl.b[a][i]; } out[i]=v; }
+      if(mode===0){ const R=node.reg, SS=node.ss; for(let a=0;a<nA;a++){ const b=pl.b[a]; for(let i=0;i<n;i++){ const ix=a*n+i; let r=R[ix]; r*=r>0?dPos:dNeg; R[ix]=r+b[i]-out[i]; SS[ix]=SS[ix]*dSum+trR[i]*st[ix]; } } }
+    } else {
+      out.fill(0,0,X.n);
+      for(let a=0;a<nA;a++){ const cr=pl.r[a]; for(let j=0;j<n;j++) cr[j]=oppR[j]*st[a*n+j]; cfv(node.kids[a],t,trR,cr,pl.b[a],d+1,mode,amts); const b=pl.b[a]; for(let i=0;i<X.n;i++) out[i]+=b[i]; }
+    }
+  };
+  const R0=P[0].w, R1=P[1].w, out0=new Float32Array(P[0].n), out1=new Float32Array(P[1].n), cmp0=new Float32Array(P[0].n);
+  compat(0,R1,cmp0,null); let Z=0; for(let i=0;i<P[0].n;i++) Z+=R0[i]*cmp0[i];
+  const exploit=()=>{ cfv(root,0,R0,R1,out0,0,1); cfv(root,1,R1,R0,out1,0,1); let b0=0,b1=0; for(let i=0;i<P[0].n;i++) b0+=R0[i]*out0[i]; for(let i=0;i<P[1].n;i++) b1+=R1[i]*out1[i]; return Math.max(0,((b0+b1)/Z-potRoot)/2)/potRoot; };
+  const maxIters=o.maxIters||1000, timeMs=o.timeMs||8000, target=o.targetExpl??0.005, every=o.checkEvery||50; let expl=null;
+  while(it<maxIters){
+    it++; const ta=Math.pow(it,1.5); dPos=ta/(ta+1); dNeg=0.5; dSum=Math.pow(it/(it+1),2);
+    cfv(root,0,R0,R1,out0,0,0); cfv(root,1,R1,R0,out1,0,0);
+    const el=Date.now()-t0;
+    if(it%every===0){ expl=exploit(); if(o.onProgress) o.onProgress(Math.min(0.99,Math.max(it/maxIters,el/timeMs)),it,expl); if(expl<=target) break; }
+    if(el>timeMs) break;
+  }
+  if(expl===null||it%every!==0) expl=exploit();
+  // 루트(히어로) 평균 전략과 액션별 EV (양쪽 평균 전략 기준)
+  const nA=root.A.length, n0=P[0].n, avg=new Float32Array(nA*n0); strategy(root,true,avg);
+  const ev=[]; for(let a=0;a<nA;a++){ const b=new Float32Array(n0); cfv(root.kids[a],0,R0,R1,b,1,2); for(let i=0;i<n0;i++) b[i]=cmp0[i]>0?b[i]/cmp0[i]:0; ev.push(b); }
+  // 히어로 콤보별 쇼다운 승률 (상대 레인지 대비)
+  const eqv=new Float32Array(n0), den=new Float32Array(n0), tmp=new Float32Array(n0), cc=new Float32Array(n0), amt={win:1,lose:0,tie:0.5,fold:()=>0};
+  for(let vi=0;vi<V.length;vi++){ const vo=V[vi].valid[1], rr=new Float32Array(P[1].n); for(let j=0;j<P[1].n;j++) rr[j]=R1[j]*vo[j]; terminal({type:'sd',v:vi,add:[0,0]},0,rr,tmp,amt); compat(0,rr,cc,V[vi].valid[0]); for(let i=0;i<n0;i++){ eqv[i]+=tmp[i]; den[i]+=cc[i]; } }
+  for(let i=0;i<n0;i++) eqv[i]=den[i]>0?eqv[i]/den[i]:0.5;
+  const avgOf=node=>{ const a=new Float32Array(node.A.length*node.n); strategy(node,true,a); return a; };
+  return {root,actions:root.A,avg,ev,eq:eqv,iters:it,expl,ms:Date.now()-t0,nodes:nActNodes,P,avgOf,compat0:cmp0};
+}
+function solverNode(spot,street){
+  const cfg=DATA.frequency.solver; if(!cfg||!cfg.enabled) return null;
+  if(street!=='river'&&!(street==='turn'&&cfg.turn)) return null;
+  const rp=replaySpot(spot,street); if(rp.errors.length||!rp.reached||rp.state.handOver) return null;
+  const st=rp.state, heroPos=spot.hero.position; if(rp.toAct!==heroPos) return null;
+  const nb=street==='river'?5:4; if(boardCards(spot).length<nb) return null;
+  const alive=st.players.filter(p=>!p.folded); if(alive.length!==2) return null;
+  const hero=getP(st,heroPos), vil=alive.find(p=>p.pos!==heroPos); if(hero.stack<=EPS) return null;
+  return {st,hero,vil,nb};
+}
+function analyzeSolver(spot,street,opts={}){
+  const t0=Date.now(), node=solverNode(spot,street); if(!node) throw new Error('솔버를 쓸 수 없는 상황이에요');
+  const {st,hero,vil,nb}=node, cfg=DATA.frequency.solver, boardFull=boardCards(spot).map(cid), board=boardFull.slice(0,nb);
+  const hv=buildVillain(hero,st,spot,street,board,boardFull), vv=buildVillain(vil,st,spot,street,board,boardFull);
+  const trim=cs=>{ const m=cs.reduce((a,x)=>Math.max(a,x.w),0); return cs.filter(x=>x.w>m*(cfg.minWeight||0.002)); };
+  let hc=trim(hv.combos); const vc=trim(vv.combos);
+  const hole=(spot.hero.hole||[]).map(cid), hasHole=hole.length===2&&hole.every(x=>x>=0)&&!hole.some(c=>board.includes(c));
+  const hk=hasHole?[...hole].sort((a,b)=>a-b).join():null;
+  if(hasHole&&!hc.some(x=>[...x.c].sort((a,b)=>a-b).join()===hk)){ const a0=hole[0]>>2,a1=hole[1]>>2; hc=hc.concat([{c:hole.slice(),w:1e-3,cls:clsIdx(Math.max(a0,a1),Math.min(a0,a1),a0===a1?'p':(hole[0]&3)===(hole[1]&3)?'s':'o')}]); }
+  const order=postflopOrder(st.n), oop=order.indexOf(hero.pos)<order.indexOf(vil.pos)?0:1;
+  const acted=[false,st.history.some(a=>a.street===street&&a.pos===vil.pos)];
+  const S=street==='river'?{bet:cfg.riverBet,raise:cfg.riverRaise}:{bet:cfg.turnBet,raise:cfg.turnRaise,rbet:cfg.riverAfterTurnBet,rraise:cfg.riverAfterTurnRaise||[]};
+  const R=solveHU({board,combos:[hc,vc],potRoot:st.pot,bets:[hero.bet,vil.bet],stacks:[hero.stack,vil.stack],raises:st.raiseCount,lastRaise:st.lastRaise,acted,oop,sizes:S,maxRaises:cfg.maxRaises,bb:st.bb,
+    timeMs:opts.timeMs||cfg.timeMs,maxIters:opts.maxIters||cfg.maxIters,chanceSample:cfg.turnSample||0,targetExpl:cfg.targetExpl,checkEvery:cfg.checkEvery,onProgress:opts.onProgress});
+  const toCall=Math.min(Math.max(0,st.currentBet-hero.bet),hero.stack), n0=R.P[0].n;
+  const cands=R.actions.map(a=>{ const to=a.kind==='call'?hero.bet+a.amt:a.kind==='fold'||a.kind==='check'?hero.bet:a.to, inv=to-hero.bet;
+    return {key:a.kind==='fold'||a.kind==='check'||a.kind==='call'||a.kind==='allin'?a.kind:`${a.kind}_${a.to}`,kind:a.kind,label:a.kind==='fold'?'폴드':a.kind==='check'?'체크':a.kind==='call'?`콜 ${fmt(a.amt)}bb`:a.kind==='allin'?`올인 ${fmt(to)}bb`:`${a.kind==='bet'?'벳':'레이즈'} ${fmt(to)}bb`,toBB:to,investBB:inv,sizePctPot:inv>0&&st.pot?inv/st.pot:null}; });
+  const nA=cands.length, classes=new Array(169).fill(null), cw=new Float64Array(169), r0=R.P[0].w;
+  for(let i=0;i<n0;i++){ const c=hc[i].cls; if(!classes[c]) classes[c]={freq:new Array(nA).fill(0),ev:new Array(nA).fill(0),eq:0,combos:0,_w:0}; const C=classes[c], w=Math.max(r0[i],1e-6); C._w+=w; C.combos++; C.eq+=w*R.eq[i]; for(let a=0;a<nA;a++){ C.freq[a]+=w*R.avg[a*n0+i]; C.ev[a]+=w*R.ev[a][i]; } cw[c]+=r0[i]; }
+  let tot=0; const agg=new Array(nA).fill(0);
+  for(let i=0;i<n0;i++){ tot+=r0[i]; for(let a=0;a<nA;a++) agg[a]+=r0[i]*R.avg[a*n0+i]; }
+  classes.forEach(C=>{ if(!C) return; C.eq/=C._w; for(let a=0;a<nA;a++){ C.freq[a]/=C._w; C.ev[a]/=C._w; } delete C._w; });
+  const heroW=Array.from({length:169},(_,i)=>Math.min(1,cw[i]/CLASSES[i].combos)), hm=Math.max(...heroW)||1;
+  const vr=[{pos:vv.pos,steps:vv.steps,pct:comboPct(vc),grid:villainGrid({combos:vc}),notes:vv.notes}];
+  const range={street,source:'solver',pot:st.pot,toCall,potOddsPct:potOddsPct(st.pot,toCall),heroIP:oop===1,pushFold:false,effStack:Math.min(hero.stack,vil.stack),cands,classes,
+    agg:cands.map((c,a)=>({key:c.key,freq:tot?agg[a]/tot:0,combos:agg[a]})),heroW:heroW.map(x=>x/hm),heroRangePct:comboPct(hc),villainRanges:vr,heroRanges:{},icm:false,
+    meta:{samples:0,iters:R.iters,ms:Date.now()-t0,expl:R.expl,nodes:R.nodes,model:'solver',combos:[n0,R.P[1].n]}};
+  let hand=null;
+  if(hasHole){ const i=hc.findIndex(x=>[...x.c].sort((a,b)=>a-b).join()===hk);
+    const actions=cands.map((cd,a)=>({key:cd.key,kind:cd.kind,label:cd.label,toBB:cd.toBB,investBB:cd.investBB,sizePctPot:cd.sizePctPot,frequency:R.avg[a*n0+i],ev:R.ev[a][i],cardEquity:R.eq[i],potWinProb:null,foldProb:null,approx:false,detail:{},
+      assumptions:{model:'solver',valuation:'chipEV',samples:0,villainRangePct:[{pos:vv.pos,pct:comboPct(vc)}],approx:false,defMult:1}}));
+    const a={street,pot:st.pot,toCall,potOddsPct:potOddsPct(st.pot,toCall),heroEquityVsRange:R.eq[i],heroEquityStderr:0,heroIP:oop===1,pushFold:false,effStack:range.effStack,heroStack:hero.stack,
+      players:st.players.map(p=>({pos:p.pos,stack:p.stack,bet:p.bet,folded:p.folded})),villainRanges:vr,icm:false,candidates:actions,sensitivity:{flip:false,tops:[]},meta:{samples:0,seed:0,ms:range.meta.ms,model:'solver',valuation:'chipEV'}};
+    const ex=R.expl*100;
+    hand={actions,source:'solver',confidence:ex<1?'high':ex<3?'medium':'low',notes:[`헤즈업 CFR 솔버: ${R.iters}회 반복, 균형 오차 팟의 ${ex.toFixed(2)}% (${(range.meta.ms/1000).toFixed(1)}초)`,'정해진 베팅 사이즈 안에서의 균형이에요. 입력 레인지(추정)에 따라 결과가 달라져요.','솔버는 칩EV 기준이에요 (ICM 미적용).'],analysis:a};
+  }
+  return {range,hand};
+}
+const SolverProvider={ id:'solver', supports(spot,street){ return !!solverNode(spot,street); }, async solve(spot,street,opts={}){ const r=analyzeSolver(spot,street,opts); if(!r.hand) throw new Error('내 카드 2장을 입력하세요'); return r.hand; } };
+
 /* ---------- 빈도 (EV → 소프트맥스) ---------- */
 function computeFrequencies(cands,cfg){
   const T=cfg.temperature, th=cfg.similarEV, minF=cfg.minFreq;
@@ -1158,7 +1326,7 @@ const HeuristicProvider={
   }
 };
 const emptyProvider=id=>({id,supports(){return false;},async solve(){throw new Error(id+' 공급자는 아직 구현되지 않았어요');}});
-function makeRegistry(){ return {providers:[emptyProvider('solver'),emptyProvider('chart'),NashProvider,HeuristicProvider],
+function makeRegistry(){ return {providers:[SolverProvider,emptyProvider('chart'),NashProvider,HeuristicProvider],
   async solve(spot,street,opts){ for(const p of this.providers) if(p.supports(spot,street)) return p.solve(spot,street,opts); throw new Error('처리 가능한 전략 공급자가 없어요'); } }; }
 const REGISTRY=makeRegistry();
 
@@ -1190,6 +1358,7 @@ function deserializeState(str){ const o=JSON.parse(str); if(o.v!==1||!POSITIONS[
 async function handleWorkerMessage(msg,post){
   if(msg.type==='init'){ setData(msg.data); post({type:'ready'}); }
   else if(msg.type==='analyzeAll'){
+    try{ if(solverNode(msg.spot,msg.street)){ const r=analyzeSolver(msg.spot,msg.street,{onProgress:(p,it,ex)=>post({type:'progress',id:msg.id,pct:p})}); post({type:'result',id:msg.id,payload:{range:r.range,hand:msg.withHand?r.hand:null}}); return; } }catch(e){ /* 솔버 실패 시 아래로 */ }
     try{ if(pushFoldNode(msg.spot,msg.street)){ const r=analyzeNash(msg.spot,msg.street,{}); post({type:'result',id:msg.id,payload:{range:r.range,hand:msg.withHand?r.hand:null}}); return; } }catch(e){ /* 내시 실패 시 휴리스틱으로 */ }
     try{ const w=msg.withHand?0.75:1;
       const range=analyzeRange(msg.spot,msg.street,{seed:msg.seed,onProgress:p=>post({type:'progress',id:msg.id,pct:p*w})});
@@ -1243,6 +1412,20 @@ async function runSelfTests(){
   t('내시 + ICM: 순위 점수가 걸리면 콜 범위가 좁아짐',()=>{ const T6=[15,15,15,15,15,15], live=[0,0,0,0,0.5,1], dead=[0,0,0,0,0,1]; const c=solvePushFold({T:T6,live,dead,payouts:null,iters:200}), i=solvePushFold({T:T6,live,dead,payouts:[8,5,3,2,1,0],iters:200}); const cc=pfFrac(c.C[3][5]), ic=pfFrac(i.C[3][5]); ok(ic<cc,`BB 콜 ICM ${(ic*100).toFixed(1)}% vs 칩 ${(cc*100).toFixed(1)}%`); });
   t('내시 공급자 연결: 10bb 앞자리 폴드 → BTN 올인/폴드',async()=>{ const A=(position,type,toBB)=>({street:'preflop',position,type,toBB}); const s=mkSpot({players:POSITIONS[6].map(p=>({position:p,stackBB:10,isHero:p==='BTN'})),hero:{position:'BTN',hole:['Ah','5d']},actions:[A('UTG','fold'),A('HJ','fold'),A('CO','fold')]}); ok(NashProvider.supports(s,'preflop')); const r=await REGISTRY.solve(s,'preflop',{}); ok(r.source==='nash'&&r.actions.length===2); const ar=analyzeNash(s,'preflop',{}); const jam=ar.range.agg[1].freq; ok(jam>0.3&&jam<0.75,'BTN 10bb 올인 '+(jam*100).toFixed(0)+'%'); ok(ar.range.classes[0].freq[1]>0.99,'AA 올인'); });
   t('참가 인원별 순위 점수 규칙',()=>{ ok(pointsForEntrants(12).join()==='8,5,3,2,1,0,0,-1,-2,-3,-4,-5','12명'); for(let N=6;N<=12;N++){ const p=pointsForEntrants(N); near(p.reduce((a,b)=>a+b,0),4,1e-9,N+'명 합'); ok(p.length===N); } ok(pointsForEntrants(6).join()==='5,2,0,0,-1,-2','6명'); ok(pointsForEntrants(7).join()==='6,3,1,0,-1,-2,-3','7명'); });
+  t('솔버: 폴라 리버 (넛+에어 vs 블러프캐처) → 에어 블러프≈50%, 콜≈50%',()=>{ const B=parseCards('2c2d7h9sKc'); const w=(r,wt)=>expandToCombos(parseRange(r),B).map(x=>({c:x.c,w:wt,cls:x.cls}));
+    const hero=w('77',1).concat(w('65o, 65s',3/16)), vil=w('KQs, KQo',1);
+    const R=solveHU({board:B,combos:[hero,vil],potRoot:10,bets:[0,0],stacks:[10,10],raises:0,lastRaise:1,acted:[false,false],oop:0,sizes:{bet:[1],raise:[]},maxRaises:1,bb:1,timeMs:6000,maxIters:3000,targetExpl:0.002,checkEvery:50});
+    const ai=R.actions.findIndex(a=>a.kind==='allin'), n0=R.P[0].n; let an=0,ab=0,nn=0,nb=0; for(let i=0;i<n0;i++){ const f=R.avg[ai*n0+i], wt=hero[i].w; if((hero[i].c[0]>>2)===5){ nn+=wt; nb+=wt*f; } else { an+=wt; ab+=wt*f; } }
+    const vn=R.root.kids[ai], va=R.avgOf(vn), ci=vn.A.findIndex(a=>a.kind==='call'), n1=vn.n; let cs=0; for(let j=0;j<n1;j++) cs+=va[ci*n1+j]; const call=cs/n1;
+    T.info+=` · 폴라 블러프 ${(ab/an*100).toFixed(0)}% 콜 ${(call*100).toFixed(0)}% 오차 ${(R.expl*100).toFixed(2)}% ${R.iters}회`;
+    ok(nb/nn>0.9,'넛 벳'); near(ab/an,0.5,0.12,'에어 블러프'); near(call,0.5,0.12,'콜 빈도'); ok(R.expl<0.02,'오차 '+R.expl); });
+  t('솔버 연결: 리버 / 턴 헤즈업 (10초 이내)',()=>{ const A=(street,position,type,toBB)=>({street,position,type,toBB});
+    const pre=[A('preflop','UTG','fold'),A('preflop','HJ','fold'),A('preflop','CO','raise',2.5),A('preflop','BTN','call'),A('preflop','SB','fold'),A('preflop','BB','fold'),A('flop','CO','check'),A('flop','BTN','check')];
+    const sr=mkSpot({hero:{position:'BTN',hole:['Ah','Td']},board:{flop:['Kc','7d','2h'],turn:'9s',river:'3c'},actions:pre.concat([A('turn','CO','check'),A('turn','BTN','check'),A('river','CO','bet',4)])});
+    ok(SolverProvider.supports(sr,'river'),'리버 지원'); const r=analyzeSolver(sr,'river',{}); near(r.range.agg.reduce((a,x)=>a+x.freq,0),1,1e-4); ok(r.range.cands.some(c=>c.kind==='call')&&r.hand,'콜 후보'); ok(r.range.meta.ms<10000);
+    const st=mkSpot({hero:{position:'BTN',hole:['Ah','Td']},board:{flop:['Kc','7d','2h'],turn:'9s'},actions:pre.concat([A('turn','CO','bet',3)])});
+    ok(SolverProvider.supports(st,'turn'),'턴 지원'); const t2=analyzeSolver(st,'turn',{timeMs:4000}); near(t2.range.agg.reduce((a,x)=>a+x.freq,0),1,1e-4); ok(t2.range.meta.ms<10000);
+    T.info+=` · 리버 ${r.range.meta.iters}회 ${r.range.meta.ms}ms 오차 ${(r.range.meta.expl*100).toFixed(2)}% (${r.range.meta.combos.join('x')}콤보) · 턴 ${t2.range.meta.iters}회 ${t2.range.meta.ms}ms 오차 ${(t2.range.meta.expl*100).toFixed(2)}% (${t2.range.meta.combos.join('x')}콤보)`; });
   t('저장 직렬화 왕복',()=>{ const s={n:6,heroPos:'BTN',unit:'bb',bbChips:100,sbBB:0.5,anteBB:0,stacks:{UTG:40},slots:{h0:'Ah',h1:'Kd'},actions:[{street:'preflop',position:'UTG',type:'fold'}],street:'preflop'}; const o=deserializeState(serializeState(s)); ok(o.heroPos==='BTN'&&o.actions.length===1&&o.slots.h0==='Ah'); });
   const res=[]; for(const [name,fn] of T){ try{ await fn(); res.push({name,pass:true}); }catch(e){ res.push({name,pass:false,msg:e.message}); } }
   res.info=T.info; return res;
@@ -1523,7 +1706,7 @@ function mainArea(spot,info){
   return `<div class="main">${left}<div class="panel">${overview(spot,info,r)}</div></div>`;
 }
 function waiting(info){
-  if(ui.running) return `<div class="empty"><b>169개 핸드 전략 계산 중… <span id="progt">${(ui.progress*100).toFixed(0)}%</span></b><div class="bar" style="width:60%"><i id="prog" style="width:${(ui.progress*100).toFixed(0)}%"></i></div><span>화면 뒤(Web Worker)에서 계산해요</span></div>`;
+  if(ui.running) return `<div class="empty"><b>${['turn','river'].includes(store.street)?'전략 계산 중 (헤즈업이면 솔버, 최대 약 8초)':'169개 핸드 전략 계산 중'}… <span id="progt">${(ui.progress*100).toFixed(0)}%</span></b><div class="bar" style="width:60%"><i id="prog" style="width:${(ui.progress*100).toFixed(0)}%"></i></div><span>화면 뒤(Web Worker)에서 계산해요</span></div>`;
   if(ui.error) return `<div class="empty"><span class="err">⚠ ${esc(ui.error)}</span><button data-act="analyze">다시 시도</button></div>`;
   return `<div class="empty"><b>내 차례가 되면 전략이 나와요</b><span>위 줄에서 상대들의 액션을 순서대로 넣으면<br>내 차례에 169개 핸드의 액션 빈도를 자동으로 계산해요.</span></div>`;
 }
@@ -1537,7 +1720,7 @@ function strategyView(r,info){
     g+=`<button class="sc${i===ui.sel?' sel':''}${i===hc?' me':''}" data-cell="${i}" style="background:${bg};${op}" title="${esc(tip)}">${cl.name}</button>`; }
   g+='</div>';
   const leg=displayOrder(R.cands).map(c=>`<span><i style="background:${col[c.key]}"></i>${esc(shortLabel(c))}</span>`).join('');
-  return g+`<div class="legend">${leg}<span>· 칸 색 = 그 핸드의 액션 빈도${ui.focus?' (선택한 액션만 표시 중)':''}</span><span>· 노란 테두리 = 내 핸드</span>${R.heroRangePct<99.9?`<span>· 흐린 칸 = 지금까지의 액션상 내 레인지 밖 (내 레인지 ${R.heroRangePct.toFixed(0)}%)</span>`:''}</div>${R.source==='nash'?`<p class="sub"><span class="badge" style="color:#5ab966;border-color:#5ab966">내시 균형</span> 푸시/폴드 내시 균형${R.icm?' (ICM 순위 점수)':' (칩EV)'} · ${R.meta.iters}회 반복 · ${(R.meta.ms/1000).toFixed(1)}초 · 콜러 1명 모델</p>`:`<p class="sub">근사치${R.icm?' · ICM 순위 점수 기준':''} · ${R.meta.samples}회×169핸드 · ${(R.meta.ms/1000).toFixed(1)}초 · GTO 솔버 결과가 아니에요.</p>`}`;
+  return g+`<div class="legend">${leg}<span>· 칸 색 = 그 핸드의 액션 빈도${ui.focus?' (선택한 액션만 표시 중)':''}</span><span>· 노란 테두리 = 내 핸드</span>${R.heroRangePct<99.9?`<span>· 흐린 칸 = 지금까지의 액션상 내 레인지 밖 (내 레인지 ${R.heroRangePct.toFixed(0)}%)</span>`:''}</div>${R.source==='solver'?`<p class="sub"><span class="badge" style="color:#4fa3e8;border-color:#4fa3e8">솔버 (CFR)</span> 헤즈업 ${STREET_KO[R.street]} 솔버 · ${R.meta.iters}회 반복 · 균형 오차 팟의 ${(R.meta.expl*100).toFixed(2)}% · ${(R.meta.ms/1000).toFixed(1)}초 · 콤보 ${R.meta.combos.join('×')} · 칩EV 기준 (정해진 사이즈 안의 균형)</p>`:R.source==='nash'?`<p class="sub"><span class="badge" style="color:#5ab966;border-color:#5ab966">내시 균형</span> 푸시/폴드 내시 균형${R.icm?' (ICM 순위 점수)':' (칩EV)'} · ${R.meta.iters}회 반복 · ${(R.meta.ms/1000).toFixed(1)}초 · 콜러 1명 모델</p>`:`<p class="sub">근사치${R.icm?' · ICM 순위 점수 기준':''} · ${R.meta.samples}회×169핸드 · ${(R.meta.ms/1000).toFixed(1)}초 · GTO 솔버 결과가 아니에요.</p>`}`;
 }
 function rangeStats(R){ let m=0, ev=0, eq=0; R.classes.forEach((c,i)=>{ if(!c) return; const w=R.heroW[i]*c.combos; if(w<=0) return; m+=w; ev+=w*c.freq.reduce((a,f,k)=>a+f*c.ev[k],0); eq+=w*c.eq; }); return {combos:m,ev:m?ev/m:0,eq:m?eq/m:0}; }
 function tableCore(spot,info){
@@ -1621,7 +1804,7 @@ function breakdownView(r,spot){
   const res=r.hand, a=res.analysis, top=res.actions.reduce((x,y)=>y.frequency>x.frequency?y:x), ex=explain(res);
   let h=`<div class="rec">추천: <b>${esc(top.label)}</b> (빈도 ${(top.frequency*100).toFixed(0)}% · EV ${top.ev>=0?'+':'−'}${Math.abs(top.ev).toFixed(2)}bb)<br><span class="sub">${esc(ex[0])}</span><div class="acts" style="margin-bottom:0"><button class="pri" data-pick="${esc(top.key)}">이 액션 선택</button></div></div>`;
   h+=`<div class="sum"><div>팟<b>${fmt(a.pot)}bb</b></div><div>콜 금액<b>${fmt(a.toCall)}bb</b></div><div>필요 승률<b>${a.toCall>0?a.potOddsPct.toFixed(1)+'%':'-'}</b></div><div>상대 레인지 대비 내 승률<b>${(a.heroEquityVsRange*100).toFixed(1)}%</b></div></div>
-  <p>${res.source==='nash'?'<span class="badge" style="color:#5ab966;border-color:#5ab966">출처: 내시 균형 (푸시/폴드)</span>':'<span class="badge">출처: 근사(휴리스틱)</span><span class="badge approx">근사치</span>'}${a.icm?'<span class="badge" style="color:#f2c14e;border-color:#f2c14e">ICM 순위 점수</span>':''}<span class="badge">신뢰도 ${confKo[res.confidence]}</span><span class="badge">${a.heroIP?'포지션 유리(IP)':'포지션 불리(OOP)'}</span></p>`;
+  <p>${res.source==='solver'?'<span class="badge" style="color:#4fa3e8;border-color:#4fa3e8">출처: 헤즈업 CFR 솔버</span>':res.source==='nash'?'<span class="badge" style="color:#5ab966;border-color:#5ab966">출처: 내시 균형 (푸시/폴드)</span>':'<span class="badge">출처: 근사(휴리스틱)</span><span class="badge approx">근사치</span>'}${a.icm?'<span class="badge" style="color:#f2c14e;border-color:#f2c14e">ICM 순위 점수</span>':''}<span class="badge">신뢰도 ${confKo[res.confidence]}</span><span class="badge">${a.heroIP?'포지션 유리(IP)':'포지션 불리(OOP)'}</span></p>`;
   h+=`<div class="tw"><table><thead><tr><th>액션</th><th title="이번에 내는 총액과 팟 대비 크기">사이즈</th><th title="이 상황에서 이 액션을 고르는 비율(근사)">빈도</th><th title="끝까지 갔을 때 내 카드가 이길 확률 (콜당했을 때 기준)">카드 승률</th><th title="상대가 폴드하거나 쇼다운에서 이겨 팟을 가져올 확률">팟 획득</th><th title="이 액션의 평균 이득(bb). 지금 폴드 = 0 기준${a.icm?' · ICM 점수를 bb로 환산':''}">${a.icm?'EV(ICM bb)':'EV(bb)'}</th>${a.icm?'<th title="순위 점수 기대값 변화 (지금 폴드 = 0)">EV(점)</th><th title="ICM 없이 칩만 본 EV">칩EV</th>':''}<th></th></tr></thead><tbody>`;
   res.actions.forEach(x=>{ const open=ui.open.has(x.key), sg=x.ev>0.005?'+':x.ev<-0.005?'−':'', cls=x.ev>0.005?'pos':x.ev<-0.005?'neg':'';
     h+=`<tr class="main${x===top?' top':''}" data-row="${esc(x.key)}"><td>${open?'▾':'▸'} ${esc(x.label)}</td><td>${x.investBB>0?fmt(x.toBB)+'bb'+(x.sizePctPot!=null?` (${Math.round(x.sizePctPot*100)}%)`:''):'-'}</td><td>${(x.frequency*100).toFixed(0)}%</td><td>${x.cardEquity!=null?(x.cardEquity*100).toFixed(1)+'%':'-'}</td><td>${x.potWinProb!=null?(x.potWinProb*100).toFixed(1)+'%':'-'}</td><td class="${cls}">${sg}${Math.abs(x.ev).toFixed(2)}${x.approx?' ≈':''}</td>${a.icm?`<td>${x.evPts!=null?(x.evPts>=0?'+':'−')+Math.abs(x.evPts).toFixed(3):'0'}</td><td class="sub">${x.evChip!=null?(x.evChip>=0?'+':'−')+Math.abs(x.evChip).toFixed(2):'-'}</td>`:''}<td><button data-pick="${esc(x.key)}">선택</button></td></tr>`;
@@ -1651,7 +1834,7 @@ function secStorage(){
 function secTools(){
   return `<section class="panel"><details><summary>레인지 확인기 (13×13 그리드, 편집 가능)</summary><p class="sub">표기 예: 22+, A2s+, KTo+, QJs, 76s:0.5 (":" 뒤는 가중치) · 편집 모드에서는 칸을 눌러 0 → 0.5 → 1 로 바꿔요.</p>
   <textarea id="toolText" style="width:100%" rows="2">${esc(ui.tool.text)}</textarea><div class="row"><label><input type="checkbox" id="toolEdit"${ui.tool.edit?' checked':''} style="min-height:0"> 편집 모드</label><span>범위 <b id="toolpct"></b></span><span class="err" id="toolerr"></span></div><div id="toolgrid"></div></details>
-  <details><summary>계산 방식 안내 · 한계</summary><ul class="tight sub"><li><b>전략 격자</b>: 169개 핸드마다 액션별 EV를 계산해 소프트맥스로 빈도를 만든 근사치예요. GTO 솔버 결과가 아니에요.</li><li><b>내시 균형 (푸시/폴드)</b>: 유효 스택 20bb 이하에서 앞사람이 모두 폴드했거나 한 명이 올인한 상황은 올인/폴드 내시 균형을 직접 계산해요 (ICM 순위 점수 또는 칩EV, 콜러 1명 모델, 블로커 무시). 이때는 "내시 균형" 배지가 붙어요.</li><li><b>프리플랍 승률표</b>: 169×169 핸드 대 핸드 승률을 미리 계산해 내장했어요 (쌍당 50,000회).</li><li><b>상대 대응</b>: 상대 콤보마다 "내 액션 레인지 대비 승률 × 실현계수"가 팟오즈를 넘으면 계속, 아니면 폴드. 단, 최소 방어 빈도(MDF) 이상은 계속한다고 가정해요.</li><li><b>내 액션 레인지</b>: 상대가 보는 내 레인지는 이 격자가 그 액션에 배정한 핸드(상위 강도 순)로 몇 차례 맞춰 가요.</li><li><b>상대 레인지</b>: 프리플랍 액션 → 근사 레인지 데이터(JSON), 포스트플랍 → 핸드 강도별 가중치 축소 휴리스틱.</li><li><b>EV</b>: 칩EV(bb), 지금 폴드 = 0. 재레이즈 이후 트리는 단순화했고 ICM·사이드팟은 반영하지 않아요.</li><li><b>바꾸고 싶다면</b>: 이 파일의 JSON 블록 — 레인지 d-ranges, 사이즈 d-sizes, 상대 대응 d-response, 빈도 d-frequency, 좁히기 d-narrowing.</li></ul></details>
+  <details><summary>계산 방식 안내 · 한계</summary><ul class="tight sub"><li><b>전략 격자</b>: 169개 핸드마다 액션별 EV를 계산해 소프트맥스로 빈도를 만든 근사치예요. GTO 솔버 결과가 아니에요.</li><li><b>내시 균형 (푸시/폴드)</b>: 유효 스택 20bb 이하에서 앞사람이 모두 폴드했거나 한 명이 올인한 상황은 올인/폴드 내시 균형을 직접 계산해요 (ICM 순위 점수 또는 칩EV, 콜러 1명 모델, 블로커 무시). 이때는 "내시 균형" 배지가 붙어요.</li><li><b>헤즈업 솔버 (CFR)</b>: 턴·리버에서 2명만 남으면 정해진 베팅 사이즈(리버 팟 50·100%+올인, 레이즈 1회 / 턴 66%+올인 → 리버 75%+올인) 안에서 균형을 직접 계산해요. 최대 약 8초, 균형 오차를 함께 표시해요. 플랍은 계산하지 않아요.</li><li><b>프리플랍 승률표</b>: 169×169 핸드 대 핸드 승률을 미리 계산해 내장했어요 (쌍당 50,000회).</li><li><b>상대 대응</b>: 상대 콤보마다 "내 액션 레인지 대비 승률 × 실현계수"가 팟오즈를 넘으면 계속, 아니면 폴드. 단, 최소 방어 빈도(MDF) 이상은 계속한다고 가정해요.</li><li><b>내 액션 레인지</b>: 상대가 보는 내 레인지는 이 격자가 그 액션에 배정한 핸드(상위 강도 순)로 몇 차례 맞춰 가요.</li><li><b>상대 레인지</b>: 프리플랍 액션 → 근사 레인지 데이터(JSON), 포스트플랍 → 핸드 강도별 가중치 축소 휴리스틱.</li><li><b>EV</b>: 칩EV(bb), 지금 폴드 = 0. 재레이즈 이후 트리는 단순화했고 ICM·사이드팟은 반영하지 않아요.</li><li><b>바꾸고 싶다면</b>: 이 파일의 JSON 블록 — 레인지 d-ranges, 사이즈 d-sizes, 상대 대응 d-response, 빈도 d-frequency, 좁히기 d-narrowing.</li></ul></details>
   <details><summary>자체 검증 (테스트 실행)</summary><div class="acts"><button data-act="selftest">검증 실행</button></div><div id="testout"></div></details></section>`;
 }
 
