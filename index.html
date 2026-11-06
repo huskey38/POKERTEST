@@ -159,6 +159,19 @@ ul.tight{margin:6px 0;padding-left:20px}
 .mb{min-height:26px;min-width:0;padding:1px 7px;font-size:.74rem;border-radius:5px}
 .mb.on{outline:1px solid var(--acc);color:var(--acc)}
 .tinfo{min-width:178px}
+.topzone{display:grid;grid-template-columns:minmax(330px,500px) minmax(0,1fr);gap:8px;align-items:start}
+@media(max-width:900px){.topzone{grid-template-columns:1fr}}
+.tbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.tset{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;font-size:.8rem;color:var(--sub);padding-bottom:6px;border-bottom:1px solid var(--line)}
+.tset label{display:flex;align-items:center;gap:4px;white-space:nowrap}
+.tset select,.tset input[type=number],.tset input[type=text]{min-height:30px;padding:2px 6px;font-size:.85rem}
+.tset input[type=number]{width:72px}
+.tset input[type=checkbox]{min-height:0}
+.cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(122px,1fr));gap:6px}
+.cols .pcol{min-width:0}
+button.seat{padding:0;min-width:0;min-height:0;cursor:pointer;font:inherit;font-size:.72rem;font-weight:700}
+button.seat:hover{border-color:var(--acc);filter:brightness(1.2)}
+.plist.wide{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px;margin-bottom:6px}
 .tinfo .tr{display:flex;gap:6px;align-items:center;justify-content:space-between;font-size:.8rem;color:var(--sub)}
 .tinfo select,.tinfo input[type=number]{min-height:30px;padding:2px 6px;width:84px}
 .tinfo input[type=checkbox]{min-height:0}
@@ -172,8 +185,8 @@ ul.tight{margin:6px 0;padding-left:20px}
 .pl small{float:right;color:var(--sub);font-weight:600;margin-left:6px}
 .pl i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}
 .cin{display:flex;gap:4px;margin-top:4px;align-items:center}
-.cin input{width:62px;min-height:30px;padding:2px 6px;font-weight:700}
-.cin button{min-height:30px;padding:2px 8px;font-size:.78rem}
+.cin input{flex:1 1 40px;width:40px;min-width:0;min-height:30px;padding:2px 6px;font-weight:700}
+.cin button{min-height:30px;padding:2px 8px;font-size:.78rem;white-space:nowrap;flex:none}
 .cin span{font-size:.72rem;color:var(--sub)}
 /* 오른쪽 탭 */
 .rtabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:-4px 0 10px}
@@ -208,7 +221,7 @@ ul.tight{margin:6px 0;padding-left:20px}
 .hcards .tslot{width:42px;height:58px}
 .sheet{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--panel);border-top:2px solid var(--acc);padding:10px 12px 14px;max-height:62vh;overflow:auto;box-shadow:0 -8px 24px #000c}
 .sheet .deck{margin:0 auto}
-@media(max-width:960px){.main>.panel:last-child{order:-1}}
+
 @media(max-width:560px){.ptable{aspect-ratio:1.25;margin:10px 10px 74px}.seat{width:50px;height:50px}.tslot{width:30px;height:42px;font-size:.55rem}.tslot.cardface{font-size:.78rem}.hcards .tslot{width:36px;height:50px}.ptop{font-size:.85rem}}
 .pcenter small{display:block;color:var(--sub);font-weight:600;font-size:.75rem}
 .pcenter .bd{display:flex;gap:2px;justify-content:center;margin-top:5px}
@@ -1093,7 +1106,7 @@ const SLOT_KEYS=['h0','h1','f0','f1','f2','t','r'], SLOT_NAMES={h0:'내 카드',
 let store=defaultStore();
 // 기본값: 6인 · BB 200칩(SB 100) · BB 앤티 · 시작 스택 70,000칩(=350bb)
 function defaultStore(){ const stacks={}; POSITIONS[6].forEach(p=>stacks[p]=350); return {n:6,heroPos:'BTN',unit:'chips',bbChips:200,sbBB:0.5,anteOn:true,icmOn:true,points:[8,5,3,2,1,0],extraSizes:{},folded:{},stacks,slots:{h0:null,h1:null,f0:null,f1:null,f2:null,t:null,r:null},actions:[],street:'preflop',active:'h0'}; }
-const ui={rtab:'table',results:{},running:false,runKey:null,errKey:null,progress:0,error:'',msg:'',tab:'strategy',sel:null,focus:null,pick:false,drawer:false,vSel:0,open:new Set(),tool:{text:'22+, A2s+, KTo+, QJs, 76s:0.5',edit:false},saveMsg:''};
+const ui={rtab:'overview',results:{},running:false,runKey:null,errKey:null,progress:0,error:'',msg:'',tab:'strategy',sel:null,focus:null,pick:false,drawer:false,vSel:0,open:new Set(),tool:{text:'22+, A2s+, KTo+, QJs, 76s:0.5',edit:false},saveMsg:''};
 const cache=new Map();
 
 function spotFromStore(){
@@ -1262,15 +1275,15 @@ function topBar(spot,info){
     return `<div class="pcol ${cls}${hero?' hero':''}">${head}${left}${btns}${lines}</div>`;
   }).join('');
   const s=store;
-  const tinfo=`<div class="tinfo"><b>토너먼트 설정</b>
-    <label class="tr">인원<select data-f="n">${[2,3,4,5,6].map(n=>`<option value="${n}"${n===s.n?' selected':''}>${n}인</option>`).join('')}</select></label>
-    <label class="tr">빅블라인드(칩)<input type="number" min="1" data-f="bbChips" value="${s.bbChips}"></label>
-    <label class="tr">스택 단위<select data-f="unit"><option value="bb"${s.unit==='bb'?' selected':''}>bb</option><option value="chips"${s.unit==='chips'?' selected':''}>칩</option></select></label>
-    <label class="tr"><span><input type="checkbox" data-f="anteOn"${s.anteOn?' checked':''}> BB 앤티</span><span>SB ${fmt(s.bbChips/2)}칩</span></label>
-    <label class="tr" title="칩을 순위 점수 가치로 바꿔 계산 (탈락 위험 반영)"><span><input type="checkbox" data-f="icmOn"${s.icmOn?' checked':''}> ICM 순위 점수</span></label>
-    ${s.icmOn?`<label class="tr" title="남은 ${s.n}명의 1등부터 ${s.n}등까지 점수 (쉼표로 구분)">1~${s.n}등<input type="text" data-f="points" value="${(s.points||[]).slice(0,s.n).join(',')}" style="width:104px;min-height:30px;padding:2px 6px"></label>`:''}
-    <button data-act="drawer" class="mb${ui.drawer?' on':''}" title="예제 · 저장 · 공유 · 도구">⋯ 예제·저장·도구</button></div>`;
-  return `<div class="topbar">${tinfo}${cols}</div>`;
+  const tset=`<div class="tset"><b style="color:var(--ink)">토너먼트</b>
+    <label>인원<select data-f="n">${[2,3,4,5,6].map(n=>`<option value="${n}"${n===s.n?' selected':''}>${n}인</option>`).join('')}</select></label>
+    <label title="스몰블라인드는 절반(${fmt(s.bbChips/2)}칩)">BB<input type="number" min="1" data-f="bbChips" value="${s.bbChips}">칩</label>
+    <label>단위<select data-f="unit"><option value="bb"${s.unit==='bb'?' selected':''}>bb</option><option value="chips"${s.unit==='chips'?' selected':''}>칩</option></select></label>
+    <label><input type="checkbox" data-f="anteOn"${s.anteOn?' checked':''}>BB앤티</label>
+    <label title="칩을 순위 점수 가치로 바꿔 계산 (탈락 위험 반영)"><input type="checkbox" data-f="icmOn"${s.icmOn?' checked':''}>ICM</label>
+    ${s.icmOn?`<label title="남은 ${s.n}명의 1등부터 ${s.n}등까지 점수 (쉼표로 구분)">1~${s.n}등<input type="text" data-f="points" value="${(s.points||[]).slice(0,s.n).join(',')}" style="width:96px"></label>`:''}
+    <button data-act="drawer" class="mb${ui.drawer?' on':''}" title="예제 · 저장 · 공유 · 도구">⋯ 예제·저장</button></div>`;
+  return `<div class="topzone"><div class="tbox">${tset}${tableCore(spot,info)}<p class="sub" style="margin:0;text-align:center">자리를 누르면 내 포지션이 바뀌어요 · 카드 칸을 누르면 카드 선택</p></div><div class="cols">${cols}</div></div>`;
 }
 function tslot(k,extra=''){ const v=store.slots[k], c=v?cid(v):-1, act=ui.pick&&store.active===k; return `<button class="tslot${act?' active':''}${v?' cardface su'+(c&3):''}${extra}" data-slot="${k}" title="${SLOT_NAMES[k]} (누르면 카드 선택)">${v?cardHtml(c):SLOT_NAMES[k].replace(' ','<br>')}</button>`; }
 function deckSheet(){
@@ -1348,26 +1361,29 @@ function strategyView(r,info){
   return g+`<div class="legend">${leg}<span>· 칸 색 = 그 핸드의 액션 빈도${ui.focus?' (선택한 액션만 표시 중)':''}</span><span>· 노란 테두리 = 내 핸드</span>${R.heroRangePct<99.9?`<span>· 흐린 칸 = 지금까지의 액션상 내 레인지 밖 (내 레인지 ${R.heroRangePct.toFixed(0)}%)</span>`:''}</div><p class="sub">근사치${R.icm?' · ICM 순위 점수 기준':''} · ${R.meta.samples}회×169핸드 · ${(R.meta.ms/1000).toFixed(1)}초 · GTO 솔버 결과가 아니에요.</p>`;
 }
 function rangeStats(R){ let m=0, ev=0, eq=0; R.classes.forEach((c,i)=>{ if(!c) return; const w=R.heroW[i]*c.combos; if(w<=0) return; m+=w; ev+=w*c.freq.reduce((a,f,k)=>a+f*c.ev[k],0); eq+=w*c.eq; }); return {combos:m,ev:m?ev/m:0,eq:m?eq/m:0}; }
-function tableView(spot,info,r){
+function tableCore(spot,info){
   const rp=info.rp||replaySpot(spot,store.street), st=rp.state, hero=store.heroPos, pos=POSITIONS[store.n], n=pos.length, h=pos.indexOf(hero);
-  const toAct=rp.errors.length?null:rp.toAct, order=postflopOrder(store.n), nb={preflop:0,flop:3,turn:4,river:5}[store.street], board=boardCards(spot).slice(0,nb).map(cid);
+  const toAct=rp.errors.length?null:rp.toAct;
   const toCall=Math.max(0,st.currentBet-getP(st,hero).bet), po=toCall>0?Math.min(toCall,getP(st,hero).stack)/(st.pot+Math.min(toCall,getP(st,hero).stack))*100:0;
   const P=(i,rad)=>{ const a=Math.PI/2+(i-h)*2*Math.PI/n; return {x:50+rad*48*Math.cos(a),y:50+rad*46*Math.sin(a)}; };
   let t=`<div class="ptop">팟 ${fmt(st.pot)} bb${toCall>0?`<small>팟오즈 ${po.toFixed(1)}%</small>`:''}<small>${STREET_KO[store.street]}${store.anteOn?' · BB앤티 포함':''}</small></div><div class="ptable"><div class="felt"></div>`;
-  pos.forEach((q,i)=>{ const p=getP(st,q), s1=P(i,1); t+=`<div class="seat${q===hero?' hero':''}${q===toAct?' cur':''}${p.folded?' out':''}" style="left:${s1.x}%;top:${s1.y}%" title="${q} · 스택 ${fmt(p.stack)}bb"><span>${q}</span><b>${fmt(p.stack)}</b></div>`;
+  pos.forEach((q,i)=>{ const p=getP(st,q), s1=P(i,1), cls=`seat${q===hero?' hero':''}${q===toAct?' cur':''}${p.folded?' out':''}`, inner=`<span>${q}${q===hero?'★':''}</span><b>${fmt(p.stack)}</b>`;
+    t+=q===hero?`<div class="${cls}" style="left:${s1.x}%;top:${s1.y}%" title="내 자리 · ${q} · 스택 ${fmt(p.stack)}bb">${inner}</div>`:`<button class="${cls}" data-sethero="${q}" style="left:${s1.x}%;top:${s1.y}%" title="${q}를 내 자리로 · 스택 ${fmt(p.stack)}bb">${inner}</button>`;
     if(p.bet>0){ const c=P(i,0.74); t+=`<div class="chip${q==='BB'||p.bet>1?' big':''}" style="left:${c.x}%;top:${c.y}%"><i></i>${fmt(p.bet)}</div>`; }
-    if(q==='BTN'||(n===2&&q==='BTN')){ const a=Math.PI/2+(i-h)*2*Math.PI/n+0.33, x=50+0.74*48*Math.cos(a), y=50+0.74*46*Math.sin(a); t+=`<div class="dbtn" style="left:${x}%;top:${y}%">D</div>`; } });
+    if(q==='BTN'){ const a=Math.PI/2+(i-h)*2*Math.PI/n+0.33, x=50+0.74*48*Math.cos(a), y=50+0.74*46*Math.sin(a); t+=`<div class="dbtn" style="left:${x}%;top:${y}%">D</div>`; } });
   const lockT=!(store.slots.f0&&store.slots.f1&&store.slots.f2), lockR=lockT||!store.slots.t;
   t+=`<div class="bslots">${tslot('f0')}${tslot('f1')}${tslot('f2')}<span class="gap"></span>${tslot('t',lockT?' lock':'')}<span class="gap"></span>${tslot('r',lockR?' lock':'')}</div>`;
   const hs1=P(h,1); t+=`<div class="hcards" style="left:${hs1.x}%;top:calc(${hs1.y}% + 32px)">${tslot('h0')}${tslot('h1')}</div></div>`;
+  return t;
+}
+function playerList(spot,info,r){
+  const rp=info.rp||replaySpot(spot,store.street), st=rp.state, hero=store.heroPos, pos=POSITIONS[store.n], order=postflopOrder(store.n);
   const live=pos.filter(q=>!getP(st,q).folded), hs=r?rangeStats(r.range):null;
   const ipOf=q=>live.filter(o=>o!==q).every(o=>order.indexOf(q)>order.indexOf(o));
-  let list='<div class="plist">';
-  for(const q of live){ const isH=q===hero, v=r&&!isH?r.range.villainRanges.find(x=>x.pos===q):null;
-    const eqv=isH?(hs?hs.eq:null):(hs&&live.length===2?1-hs.eq:null);
-    list+=`<div class="pinfo"><div class="pt">${q}${isH?' ★':''}<span>${ipOf(q)?'IP':'OOP'}</span></div><div class="pv">${isH?`<div>EV<b>${hs?(hs.ev>=0?'+':'−')+Math.abs(hs.ev).toFixed(2):'–'}</b></div>`:`<div>승률<b>${eqv!=null?(eqv*100).toFixed(1)+'%':'–'}</b></div>`}<div>콤보<b>${isH?(hs?hs.combos.toFixed(0):'–'):(v?(v.pct*13.26).toFixed(0):'–')}</b></div>${isH?`<div>승률<b>${hs?(hs.eq*100).toFixed(1)+'%':'–'}</b></div><div>레인지<b>${r?r.range.heroRangePct.toFixed(0)+'%':'–'}</b></div>`:''}</div></div>`; }
-  list+=`</div>`;
-  return `<div class="twrap"><div>${t}</div>${list}</div><p class="sub" style="margin:2px 0 0">★ = 나 · EV는 내 레인지 전체 평균(${r&&r.range.icm?'ICM 환산 ':''}bb, 지금 폴드 = 0 기준) · 상대 승률은 헤즈업일 때만 표시${store.icmOn?` · ICM 점수 ${(store.points||[]).slice(0,store.n).join('/')}`:''}</p>`;
+  let list='<div class="plist wide">';
+  for(const q of live){ const isH=q===hero, v=r&&!isH?r.range.villainRanges.find(x=>x.pos===q):null, eqv=isH?(hs?hs.eq:null):(hs&&live.length===2?1-hs.eq:null);
+    list+=`<div class="pinfo"><div class="pt">${q}${isH?' ★':''}<span>${ipOf(q)?'IP':'OOP'}</span><span>${fmt(getP(st,q).stack)}bb</span></div><div class="pv">${isH?`<div>EV<b>${hs?(hs.ev>=0?'+':'−')+Math.abs(hs.ev).toFixed(2):'–'}</b></div>`:`<div>승률<b>${eqv!=null?(eqv*100).toFixed(1)+'%':'–'}</b></div>`}<div>콤보<b>${isH?(hs?hs.combos.toFixed(0):'–'):(v?(v.pct*13.26).toFixed(0):'–')}</b></div>${isH?`<div>승률<b>${hs?(hs.eq*100).toFixed(1)+'%':'–'}</b></div><div>레인지<b>${r?r.range.heroRangePct.toFixed(0)+'%':'–'}</b></div>`:''}</div></div>`; }
+  return list+`</div><p class="sub" style="margin:0 0 4px">★ = 나 · EV는 내 레인지 전체 평균(${r&&r.range.icm?'ICM 환산 ':''}bb, 지금 폴드 = 0) · 상대 승률은 헤즈업일 때만${store.icmOn?` · ICM 점수 ${(store.points||[]).slice(0,store.n).join('/')}`:''}</p>`;
 }
 function equityView(r){
   if(!r) return `<p class="sub">내 차례에 계산되면 내 레인지의 승률 분포가 나와요.</p>`;
@@ -1384,11 +1400,10 @@ function equityView(r){
 function overview(spot,info,r){
   const rp=info.rp||replaySpot(spot,store.street), st=rp.state, hero=store.heroPos;
   const toCall=Math.max(0,st.currentBet-getP(st,hero).bet), po=toCall>0?toCall/(st.pot+toCall)*100:0;
-  const tabs=[['overview','개요'],['table','테이블'],['equity','승률 차트']].map(([k,l])=>`<button data-rtab="${k}" class="${ui.rtab===k?'on':''}">${l}</button>`).join('');
+  const tabs=[['overview','개요'],['equity','승률 차트']].map(([k,l])=>`<button data-rtab="${k}" class="${ui.rtab===k?'on':''}">${l}</button>`).join('');
   let h=`<div class="rtabs">${tabs}</div>`;
-  if(ui.rtab==='table') h+=tableView(spot,info,r);
-  else if(ui.rtab==='equity') h+=equityView(r);
-  else h+=`<div class="posrow">${POSITIONS[store.n].map(pos=>{ const p=getP(st,pos); return `<div class="mp${p.folded?' out':''}${pos===hero?' hero':''}">${pos}<small>${fmt(p.stack)}</small></div>`; }).join('')}<div class="potinfo">팟 ${fmt(st.pot)} BB<br><small>${toCall>0?`콜 ${fmt(Math.min(toCall,getP(st,hero).stack))} · 팟오즈 ${po.toFixed(1)}%`:'콜할 금액 없음'}</small></div></div>`;
+  if(ui.rtab==='equity') h+=equityView(r);
+  else h+=playerList(spot,info,r)+`<div class="posrow" style="display:none">${POSITIONS[store.n].map(pos=>{ const p=getP(st,pos); return `<div class="mp${p.folded?' out':''}${pos===hero?' hero':''}">${pos}<small>${fmt(p.stack)}</small></div>`; }).join('')}<div class="potinfo">팟 ${fmt(st.pot)} BB<br><small>${toCall>0?`콜 ${fmt(Math.min(toCall,getP(st,hero).stack))} · 팟오즈 ${po.toFixed(1)}%`:'콜할 금액 없음'}</small></div></div>`;
   if(!r) return h+`<p class="sub" style="margin-top:14px">액션 타일과 핸드별 전략은 내 차례에 계산돼요.</p>`;
   const R=r.range, col=actColors(R.cands), ord=displayOrder(R.cands), ag=new Map(R.agg.map(a=>[a.key,a]));
   h+=`<div class="row" style="margin-top:10px;align-items:center;justify-content:space-between"><b>액션</b><span class="sub">타일을 누르면 격자에 그 액션만 표시</span></div><div class="tiles">${ord.map(c=>{ const a=ag.get(c.key); return `<button class="tile${ui.focus===c.key?' on':ui.focus?' dim':''}" data-focus="${esc(c.key)}" style="background:${col[c.key]}"><div class="tl">${esc(shortLabel(c))}</div><div class="tf">${(a.freq*100).toFixed(1)}%</div><div class="tc">${a.combos.toFixed(1)}<br>콤보</div></button>`; }).join('')}</div>`;
@@ -1491,7 +1506,7 @@ app.addEventListener('change',e=>{
 });
 app.addEventListener('click',async e=>{
   const b=e.target.closest('button,tr.main'); if(!b||b.disabled) return; const d=b.dataset;
-  if(d.slot){ if(store.slots[d.slot]&&store.active===d.slot&&ui.pick) store.slots[d.slot]=null; store.active=d.slot; ui.pick=true; ui.sel=null; ui.rtab='table'; }
+  if(d.slot){ if(store.slots[d.slot]&&store.active===d.slot&&ui.pick) store.slots[d.slot]=null; store.active=d.slot; ui.pick=true; ui.sel=null; }
   else if(d.card){ setCard(d.card); ui.sel=heroClassIdx(); }
   else if(d.fold){ const q=d.fold; if(store.folded[q]) delete store.folded[q]; else { store.folded[q]=true; store.actions=store.actions.filter(a=>a.position!==q); } ui.results={}; ui.msg=''; }
   else if(d.street){ store.street=d.street; ui.msg=''; ui.focus=null; }
