@@ -807,6 +807,13 @@ function icmUtility(ctx,mainPos){
   I.cache.set(mainPos,u); return u;
 }
 const ICMValuation={id:'icm'};
+/* 참가 인원 N명의 순위 점수: 기본 점수(가운데가 0, 한 칸마다 ±1, 짝수면 가운데 두 자리가 0 → 합 0)
+   + 보너스(1등 +3, 2등 +1 → 전체 합 +4). 예) 12명: 8,5,3,2,1,0,0,-1,-2,-3,-4,-5 */
+function pointsForEntrants(N){
+  N=Math.max(2,Math.round(N)); const out=[];
+  for(let k=1;k<=N;k++){ let b; if(N%2){ b=(N+1)/2-k; } else { const h=N/2; b=k<=h?h-k:-(k-h-1); } out.push(b+(k===1?3:k===2?1:0)); }
+  return out;
+}
 const callEV=(eq,pot,call,R=1)=>eq*R*(pot+call)-call;
 const potOddsPct=(pot,call)=>call>0?call/(pot+call)*100:0;
 
@@ -1178,7 +1185,7 @@ function explain(res){
 }
 
 /* ---------- 저장용 직렬화 / 워커 메시지 처리 ---------- */
-function serializeState(s){ return JSON.stringify({v:1,n:s.n,heroPos:s.heroPos,unit:s.unit,bbChips:s.bbChips,sbBB:s.sbBB,anteOn:s.anteOn,icmOn:s.icmOn,points:s.points,extraSizes:s.extraSizes,folded:s.folded,stacks:s.stacks,slots:s.slots,actions:s.actions,street:s.street}); }
+function serializeState(s){ return JSON.stringify({v:1,n:s.n,heroPos:s.heroPos,unit:s.unit,bbChips:s.bbChips,sbBB:s.sbBB,anteOn:s.anteOn,icmOn:s.icmOn,entrants:s.entrants,points:s.points,extraSizes:s.extraSizes,folded:s.folded,stacks:s.stacks,slots:s.slots,actions:s.actions,street:s.street}); }
 function deserializeState(str){ const o=JSON.parse(str); if(o.v!==1||!POSITIONS[o.n]) throw new Error('저장 데이터를 읽을 수 없어요'); return o; }
 async function handleWorkerMessage(msg,post){
   if(msg.type==='init'){ setData(msg.data); post({type:'ready'}); }
@@ -1235,6 +1242,7 @@ async function runSelfTests(){
   t('내시 푸시/폴드: 헤즈업 10bb 칩EV (SB 올인≈58%, BB 콜≈37%)',()=>{ const R=solvePushFold({T:[10,10],live:[0.5,1],dead:[0,0],payouts:null,iters:400}); const pj=pfFrac(R.J[0])*100, pc=pfFrac(R.C[0][1])*100; T.info+=` · HU10bb 올인 ${pj.toFixed(1)}% 콜 ${pc.toFixed(1)}%`; near(pj,58,6,'SB 올인%'); near(pc,37,6,'BB 콜%'); });
   t('내시 + ICM: 순위 점수가 걸리면 콜 범위가 좁아짐',()=>{ const T6=[15,15,15,15,15,15], live=[0,0,0,0,0.5,1], dead=[0,0,0,0,0,1]; const c=solvePushFold({T:T6,live,dead,payouts:null,iters:200}), i=solvePushFold({T:T6,live,dead,payouts:[8,5,3,2,1,0],iters:200}); const cc=pfFrac(c.C[3][5]), ic=pfFrac(i.C[3][5]); ok(ic<cc,`BB 콜 ICM ${(ic*100).toFixed(1)}% vs 칩 ${(cc*100).toFixed(1)}%`); });
   t('내시 공급자 연결: 10bb 앞자리 폴드 → BTN 올인/폴드',async()=>{ const A=(position,type,toBB)=>({street:'preflop',position,type,toBB}); const s=mkSpot({players:POSITIONS[6].map(p=>({position:p,stackBB:10,isHero:p==='BTN'})),hero:{position:'BTN',hole:['Ah','5d']},actions:[A('UTG','fold'),A('HJ','fold'),A('CO','fold')]}); ok(NashProvider.supports(s,'preflop')); const r=await REGISTRY.solve(s,'preflop',{}); ok(r.source==='nash'&&r.actions.length===2); const ar=analyzeNash(s,'preflop',{}); const jam=ar.range.agg[1].freq; ok(jam>0.3&&jam<0.75,'BTN 10bb 올인 '+(jam*100).toFixed(0)+'%'); ok(ar.range.classes[0].freq[1]>0.99,'AA 올인'); });
+  t('참가 인원별 순위 점수 규칙',()=>{ ok(pointsForEntrants(12).join()==='8,5,3,2,1,0,0,-1,-2,-3,-4,-5','12명'); for(let N=6;N<=12;N++){ const p=pointsForEntrants(N); near(p.reduce((a,b)=>a+b,0),4,1e-9,N+'명 합'); ok(p.length===N); } ok(pointsForEntrants(6).join()==='5,2,0,0,-1,-2','6명'); ok(pointsForEntrants(7).join()==='6,3,1,0,-1,-2,-3','7명'); });
   t('저장 직렬화 왕복',()=>{ const s={n:6,heroPos:'BTN',unit:'bb',bbChips:100,sbBB:0.5,anteBB:0,stacks:{UTG:40},slots:{h0:'Ah',h1:'Kd'},actions:[{street:'preflop',position:'UTG',type:'fold'}],street:'preflop'}; const o=deserializeState(serializeState(s)); ok(o.heroPos==='BTN'&&o.actions.length===1&&o.slots.h0==='Ah'); });
   const res=[]; for(const [name,fn] of T){ try{ await fn(); res.push({name,pass:true}); }catch(e){ res.push({name,pass:false,msg:e.message}); } }
   res.info=T.info; return res;
@@ -1252,7 +1260,7 @@ try{ setData(DATAOBJ); }catch(e){ document.body.insertAdjacentHTML('afterbegin',
 const SLOT_KEYS=['h0','h1','f0','f1','f2','t','r'], SLOT_NAMES={h0:'내 카드',h1:'내 카드',f0:'플랍',f1:'플랍',f2:'플랍',t:'턴',r:'리버'};
 let store=defaultStore();
 // 기본값: 6인 · BB 200칩(SB 100) · BB 앤티 · 시작 스택 70,000칩(=350bb)
-function defaultStore(){ const stacks={}; POSITIONS[6].forEach(p=>stacks[p]=350); return {n:6,heroPos:'BTN',unit:'chips',bbChips:200,sbBB:0.5,anteOn:true,icmOn:true,points:[8,5,3,2,1,0],extraSizes:{},folded:{},stacks,slots:{h0:null,h1:null,f0:null,f1:null,f2:null,t:null,r:null},actions:[],street:'preflop',active:'h0'}; }
+function defaultStore(){ const stacks={}; POSITIONS[6].forEach(p=>stacks[p]=350); return {n:6,heroPos:'BTN',unit:'chips',bbChips:200,sbBB:0.5,anteOn:true,icmOn:true,entrants:12,points:pointsForEntrants(12),extraSizes:{},folded:{},stacks,slots:{h0:null,h1:null,f0:null,f1:null,f2:null,t:null,r:null},actions:[],street:'preflop',active:'h0'}; }
 const ui={rtab:'overview',results:{},running:false,runKey:null,errKey:null,progress:0,error:'',msg:'',tab:'strategy',sel:null,focus:null,pick:false,drawer:false,vSel:0,openCols:new Set(),open:new Set(),tool:{text:'22+, A2s+, KTo+, QJs, 76s:0.5',edit:false},saveMsg:''};
 const cache=new Map();
 
@@ -1452,7 +1460,7 @@ function topBar(spot,info){
     <label>단위<select data-f="unit"><option value="bb"${s.unit==='bb'?' selected':''}>bb</option><option value="chips"${s.unit==='chips'?' selected':''}>칩</option></select></label>
     <label><input type="checkbox" data-f="anteOn"${s.anteOn?' checked':''}>BB앤티</label>
     <label title="칩을 순위 점수 가치로 바꿔 계산 (탈락 위험 반영)"><input type="checkbox" data-f="icmOn"${s.icmOn?' checked':''}>ICM</label>
-    ${s.icmOn?`<label title="남은 ${s.n}명의 1등부터 ${s.n}등까지 점수 (쉼표로 구분)">1~${s.n}등<input type="text" data-f="points" value="${(s.points||[]).slice(0,s.n).join(',')}" style="width:96px"></label>`:''}
+    ${s.icmOn?`<label title="대회 참가 인원 → 순위 점수 자동 계산 (전체: ${pointsForEntrants(s.entrants||12).join(', ')})">참가<select data-f="entrants">${[6,7,8,9,10,11,12].map(k=>`<option value="${k}"${k===(s.entrants||12)?' selected':''}>${k}명</option>`).join('')}</select></label><label title="남은 ${s.n}명의 1등부터 ${s.n}등까지 점수 (쉼표로 구분, 직접 수정 가능)">1~${s.n}등<input type="text" data-f="points" value="${(s.points||[]).slice(0,s.n).join(',')}" style="width:96px"></label>`:''}
     <button data-act="drawer" class="mb${ui.drawer?' on':''}" title="예제 · 저장 · 공유 · 도구">⋯ 예제·저장</button></div>`;
   return `<div class="topzone"><div class="tbox">${tset}${tableCore(spot,info)}<p class="sub" style="margin:0;text-align:center">자리 = 내 자리로 지정 · 자리 옆 꼬리표 ▸ = 그 자리 액션 칸 열기 · 카드 칸 = 카드 선택</p></div><div class="colzone">${cols}</div></div>`;
 }
@@ -1672,6 +1680,7 @@ app.addEventListener('change',e=>{
   else if(f==='bbChips'){ const old=store.bbChips; store.bbChips=Math.max(1,+t.value||1); if(store.unit==='chips'){ for(const k in store.stacks) store.stacks[k]=store.stacks[k]*old/store.bbChips; } }
   else if(f==='anteOn'){ store.anteOn=t.checked; ui.results={}; }
   else if(f==='icmOn'){ store.icmOn=t.checked; ui.results={}; }
+  else if(f==='entrants'){ store.entrants=+t.value; store.points=pointsForEntrants(store.entrants); ui.results={}; ui.msg=`참가 ${store.entrants}명 순위 점수: ${store.points.join(', ')}`; }
   else if(f==='points'){ const v=t.value.split(/[,\s]+/).filter(Boolean).map(Number); if(v.length>=store.n&&v.every(x=>isFinite(x))){ store.points=v.concat((store.points||[]).slice(v.length)); ui.msg=''; } else ui.msg=`순위 점수는 1등부터 ${store.n}등까지 ${store.n}개를 쉼표로 적어 주세요`; ui.results={}; }
   else if(t.id==='toolText'){ ui.tool.text=t.value; }
   else if(t.id==='toolEdit'){ ui.tool.edit=t.checked; }
