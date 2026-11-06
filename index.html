@@ -171,6 +171,10 @@ ul.tight{margin:6px 0;padding-left:20px}
 .pl.go:hover{background:#333944}
 .pl small{float:right;color:var(--sub);font-weight:600;margin-left:6px}
 .pl i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}
+.cin{display:flex;gap:4px;margin-top:4px;align-items:center}
+.cin input{width:62px;min-height:30px;padding:2px 6px;font-weight:700}
+.cin button{min-height:30px;padding:2px 8px;font-size:.78rem}
+.cin span{font-size:.72rem;color:var(--sub)}
 /* 오른쪽 탭 */
 .rtabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:-4px 0 10px}
 .rtabs button{border:0;border-radius:6px 6px 0 0;background:transparent;color:var(--sub);font-weight:700}
@@ -787,6 +791,12 @@ function generateCandidates(st,heroPos,opts={}){
       const kind=pre?'raise':(cb<=EPS?'bet':'raise'); const lb=pre?raiseLabelKo('preflop',rc+1):(cb<=EPS?'벳':'레이즈');
       out.push({key:`${kind}_${t}`,kind,label:`${lb} ${fmt(t)}bb`,toBB:t,investBB:t-b,sizePctPot:pot>0?(t-b)/pot:null,raiseNo:rc+1}); }
   }
+  // 사용자가 직접 넣은 사이즈(총액 bb): 기본 후보 규칙(올인 합치기)과 무관하게 추가, 최소 레이즈 미만·스택 이상은 제외
+  if(canRaise&&opts.extra&&opts.extra.length){ const minTo=cb>EPS?cb+st.lastRaise:st.bb, have=new Set(out.map(c=>c.toBB));
+    for(const t0 of opts.extra){ const t=r1(+t0); if(!(t>0)||t<minTo-EPS||t>=maxTo-EPS||have.has(t)) continue; have.add(t);
+      const kind=pre?'raise':(cb<=EPS?'bet':'raise'), lb=pre?raiseLabelKo('preflop',rc+1):(cb<=EPS?'벳':'레이즈');
+      out.push({key:`${kind}_${t}`,kind,label:`${lb} ${fmt(t)}bb`,toBB:t,investBB:t-b,sizePctPot:pot>0?(t-b)/pot:null,raiseNo:rc+1,custom:true}); }
+    out.sort((a,c)=>{ const rk=x=>x.kind==='fold'?0:x.kind==='call'||x.kind==='check'?1:x.kind==='allin'?3:2; return rk(a)-rk(c)||a.toBB-c.toBB; }); }
   if(canRaise) out.push({key:'allin',kind:'allin',label:`올인 ${fmt(maxTo)}bb`,toBB:maxTo,investBB:stack,sizePctPot:pot>0?stack/pot:null,raiseNo:rc+1});
   return out;
 }
@@ -883,7 +893,7 @@ function analyzeSpot(spot,street,opts={}){
   const villains=vps.map(v=>buildVillain(v,st,spot,street,dead,boardFull));
   const effStack=Math.min(hero.stack0,Math.max(...vps.map(v=>v.stack0)));
   const pushFold=street==='preflop'&&effStack<=DATA.frequency.shortStackBB;
-  const cands=generateCandidates(st,heroPos,{pushFold});
+  const cands=generateCandidates(st,heroPos,{pushFold,extra:((spot.hero.extraSizes||{})[street])||[]});
   const heroIP=villains.every(v=>ipVs(st.n,heroPos,v.pos));
   const samples=Math.max(3000,Math.min(8000,Math.round(opts.samples||(9000/(1+0.5*(villains.length-1))))));
   const ctx={icm:(spot.table.icm&&Array.isArray(spot.table.icm.payouts)&&spot.table.icm.payouts.length>=st.n)?{payouts:spot.table.icm.payouts.slice(0,st.n).map(Number)}:null,st,hero,heroPos,hole,board,pot:st.pot,villains,heroOverride:opts.heroRanges?new Map(Object.entries(opts.heroRanges).map(([k,w])=>[k,expandToCombos(Float64Array.from(w),board)])):null,model:opts.responseModel||HeuristicResponseModel,valuation:opts.valuation||ChipEV,rng,heroIP};
@@ -918,7 +928,7 @@ function analyzeRange(spot,street,opts={}){
   const board=boardFull.slice(0,nb), hero=getP(st,heroPos), vps=st.players.filter(p=>!p.folded&&p.pos!==heroPos); if(!vps.length) throw new Error('상대가 없어요');
   const villains=vps.map(v=>buildVillain(v,st,spot,street,board,boardFull));
   const effStack=Math.min(hero.stack0,Math.max(...vps.map(v=>v.stack0))), pushFold=street==='preflop'&&effStack<=DATA.frequency.shortStackBB;
-  const cands=generateCandidates(st,heroPos,{pushFold}), heroIP=villains.every(v=>ipVs(st.n,heroPos,v.pos));
+  const cands=generateCandidates(st,heroPos,{pushFold,extra:((spot.hero.extraSizes||{})[street])||[]}), heroIP=villains.every(v=>ipVs(st.n,heroPos,v.pos));
   const heroActed=st.history.some(a=>a.street==='preflop'&&a.pos===heroPos);
   const hpr=heroActed?preflopRangeFor(heroPos,st.history,hero.stack0,spot.table.playerCount,heroPos):null;
   const heroW=hpr?Array.from(hpr.range):new Array(169).fill(1);
@@ -954,7 +964,7 @@ function analyzeRange(spot,street,opts={}){
   classes.forEach((c,i)=>{ if(!c) return; const m=heroW[i]*c.combos; tot+=m; c.freq.forEach((f,k)=>agg[k]+=f*m); });
   prog(1);
   return {street,pot:st.pot,toCall:Math.min(Math.max(0,st.currentBet-hero.bet),hero.stack),potOddsPct:potOddsPct(st.pot,Math.min(Math.max(0,st.currentBet-hero.bet),hero.stack)),heroIP,pushFold,effStack,
-    cands:cands.map(c=>({key:c.key,kind:c.kind,label:c.label,toBB:c.toBB,investBB:c.investBB,sizePctPot:c.sizePctPot??null})),classes,
+    cands:cands.map(c=>({key:c.key,kind:c.kind,label:c.label,toBB:c.toBB,investBB:c.investBB,sizePctPot:c.sizePctPot??null,custom:!!c.custom})),classes,
     agg:cands.map((c,k)=>({key:c.key,freq:tot?agg[k]/tot:0,combos:agg[k]})),heroW,heroRangePct:rangePercent(Float64Array.from(heroW)),
     villainRanges:villains.map(v=>({pos:v.pos,steps:v.steps,pct:comboPct(v.combos),grid:villainGrid(v),notes:v.notes})),
     heroRanges,icm:!!ctx0.icm,meta:{samples,iters,ms:Date.now()-t0}};
@@ -1013,7 +1023,7 @@ function explain(res){
 }
 
 /* ---------- 저장용 직렬화 / 워커 메시지 처리 ---------- */
-function serializeState(s){ return JSON.stringify({v:1,n:s.n,heroPos:s.heroPos,unit:s.unit,bbChips:s.bbChips,sbBB:s.sbBB,anteOn:s.anteOn,icmOn:s.icmOn,points:s.points,folded:s.folded,stacks:s.stacks,slots:s.slots,actions:s.actions,street:s.street}); }
+function serializeState(s){ return JSON.stringify({v:1,n:s.n,heroPos:s.heroPos,unit:s.unit,bbChips:s.bbChips,sbBB:s.sbBB,anteOn:s.anteOn,icmOn:s.icmOn,points:s.points,extraSizes:s.extraSizes,folded:s.folded,stacks:s.stacks,slots:s.slots,actions:s.actions,street:s.street}); }
 function deserializeState(str){ const o=JSON.parse(str); if(o.v!==1||!POSITIONS[o.n]) throw new Error('저장 데이터를 읽을 수 없어요'); return o; }
 async function handleWorkerMessage(msg,post){
   if(msg.type==='init'){ setData(msg.data); post({type:'ready'}); }
@@ -1064,6 +1074,7 @@ async function runSelfTests(){
   t('ICM: 점수 합 보존 / 칩 리더 체감 / 버스트=최하위',()=>{ const P=[8,5,3,2,1,0]; let v=icmValues([1,1,1,1,1,1],P); near(v.reduce((a,b)=>a+b,0),19,1e-9); near(v[0],19/6,1e-9); v=icmValues([3,1,1,1,1,1],P); ok(v[0]<19*3/8,'리더 가치 < 칩 비례'); ok(v[0]>v[1]); v=icmValues([0,2,2],[8,5,3]); near(v[0],3,1e-9); });
   t('ICM 분석: 버블 압박으로 콜 범위가 칩EV보다 좁음',()=>{ const A=(position,type,toBB)=>({street:'preflop',position,type,toBB}); const pl=POSITIONS[6].map(q=>({position:q,stackBB:q==='BTN'?60:q==='BB'?12:q==='UTG'?3:20,isHero:q==='BB'})); const base={table:{playerCount:6,sb:0.5,bb:1,ante:0,bbAnte:1},players:pl,hero:{position:'BB',hole:[]},board:{},actions:[A('UTG','fold'),A('HJ','fold'),A('CO','fold'),A('BTN','allin'),A('SB','fold')]};
     const fold=r=>r.agg[r.cands.findIndex(c=>c.kind==='fold')].freq; const chip=analyzeRange(base,'preflop',{samples:150,iters:1}); const icm=analyzeRange(Object.assign({},base,{table:Object.assign({},base.table,{icm:{payouts:[8,5,3,2,1,0]}})}),'preflop',{samples:150,iters:1}); ok(icm.icm&&fold(icm)>fold(chip),`폴드 ICM ${fold(icm).toFixed(2)} vs 칩 ${fold(chip).toFixed(2)}`); });
+  t('사용자 지정 사이즈 후보 (4bb, 15bb)',()=>{ const A=(position,type,toBB)=>({street:'preflop',position,type,toBB}); const s=mkSpot({actions:[A('UTG','fold'),A('HJ','fold'),A('CO','fold')]}); const r=replaySpot(s,'preflop'); const c=generateCandidates(r.state,'BTN',{extra:[4,15,1.5,500]}); ok(c.some(x=>x.toBB===4&&x.custom)&&c.some(x=>x.toBB===15&&x.custom),'4/15 추가'); ok(!c.some(x=>x.toBB===1.5||x.toBB===500),'최소 미만·스택 초과 제외'); ok(c[c.length-1].kind==='allin'); });
   t('저장 직렬화 왕복',()=>{ const s={n:6,heroPos:'BTN',unit:'bb',bbChips:100,sbBB:0.5,anteBB:0,stacks:{UTG:40},slots:{h0:'Ah',h1:'Kd'},actions:[{street:'preflop',position:'UTG',type:'fold'}],street:'preflop'}; const o=deserializeState(serializeState(s)); ok(o.heroPos==='BTN'&&o.actions.length===1&&o.slots.h0==='Ah'); });
   const res=[]; for(const [name,fn] of T){ try{ await fn(); res.push({name,pass:true}); }catch(e){ res.push({name,pass:false,msg:e.message}); } }
   res.info=T.info; return res;
@@ -1081,7 +1092,7 @@ try{ setData(DATAOBJ); }catch(e){ document.body.insertAdjacentHTML('afterbegin',
 const SLOT_KEYS=['h0','h1','f0','f1','f2','t','r'], SLOT_NAMES={h0:'내 카드',h1:'내 카드',f0:'플랍',f1:'플랍',f2:'플랍',t:'턴',r:'리버'};
 let store=defaultStore();
 // 기본값: 6인 · BB 200칩(SB 100) · BB 앤티 · 시작 스택 70,000칩(=350bb)
-function defaultStore(){ const stacks={}; POSITIONS[6].forEach(p=>stacks[p]=350); return {n:6,heroPos:'BTN',unit:'chips',bbChips:200,sbBB:0.5,anteOn:true,icmOn:true,points:[8,5,3,2,1,0],folded:{},stacks,slots:{h0:null,h1:null,f0:null,f1:null,f2:null,t:null,r:null},actions:[],street:'preflop',active:'h0'}; }
+function defaultStore(){ const stacks={}; POSITIONS[6].forEach(p=>stacks[p]=350); return {n:6,heroPos:'BTN',unit:'chips',bbChips:200,sbBB:0.5,anteOn:true,icmOn:true,points:[8,5,3,2,1,0],extraSizes:{},folded:{},stacks,slots:{h0:null,h1:null,f0:null,f1:null,f2:null,t:null,r:null},actions:[],street:'preflop',active:'h0'}; }
 const ui={rtab:'table',results:{},running:false,runKey:null,errKey:null,progress:0,error:'',msg:'',tab:'strategy',sel:null,focus:null,pick:false,drawer:false,vSel:0,open:new Set(),tool:{text:'22+, A2s+, KTo+, QJs, 76s:0.5',edit:false},saveMsg:''};
 const cache=new Map();
 
@@ -1089,7 +1100,7 @@ function spotFromStore(){
   const s=store, sl=s.slots, pos=POSITIONS[s.n];
   const board={}; if(sl.f0&&sl.f1&&sl.f2){ board.flop=[sl.f0,sl.f1,sl.f2]; if(sl.t){ board.turn=sl.t; if(sl.r) board.river=sl.r; } }
   const pts=(s.points||[]).slice(0,s.n);
-  return {table:{playerCount:s.n,sb:0.5,bb:1,ante:0,bbAnte:s.anteOn?1:0,icm:s.icmOn&&pts.length>=s.n?{payouts:pts}:null},players:pos.map(p=>{ const out=!!s.folded[p]&&p!==s.heroPos; return {position:p,stackBB:out&&!s.icmOn?100:(s.stacks[p]||350),isHero:p===s.heroPos,out}; }),hero:{position:s.heroPos,hole:[sl.h0,sl.h1].filter(Boolean)},board,actions:s.actions};
+  return {table:{playerCount:s.n,sb:0.5,bb:1,ante:0,bbAnte:s.anteOn?1:0,icm:s.icmOn&&pts.length>=s.n?{payouts:pts}:null},players:pos.map(p=>{ const out=!!s.folded[p]&&p!==s.heroPos; return {position:p,stackBB:out&&!s.icmOn?100:(s.stacks[p]||350),isHero:p===s.heroPos,out}; }),hero:{position:s.heroPos,hole:[sl.h0,sl.h1].filter(Boolean),extraSizes:s.extraSizes||{}},board,actions:s.actions};
 }
 function keyFor(spot,street,count){ const bl={preflop:0,flop:3,turn:4,river:5}[street]; return JSON.stringify([spot.table,spot.players,spot.hero,boardCards(spot).slice(0,bl),street,spot.actions.slice(0,count)]); }
 function streetInfo(spot,street){
@@ -1229,8 +1240,10 @@ function topBar(spot,info){
       mine.forEach((a,k)=>{ lines+=`<div class="pl${k===mine.length-1?' sel':''}">${esc(a.type==='bet'||a.type==='raise'?`${a.label} ${fmt(a.to)}`:a.type==='call'?`콜 ${fmt(a.add)}`:a.label)}</div>`; });
       if(pos===toAct){ cls='cur';
         if(hero&&r){ const col=actColors(r.range.cands), hf=r.hand?new Map(r.hand.actions.map(a=>[a.key,a.frequency])):null, ag=new Map(r.range.agg.map(a=>[a.key,a.freq]));
-          lines+=displayOrder(r.range.cands).map(c=>`<button class="pl go" data-pick="${esc(c.key)}" title="내 액션으로 기록"><i style="background:${col[c.key]}"></i>${esc(shortLabel(c))}<small>${((hf?hf.get(c.key):ag.get(c.key))*100).toFixed(0)}%</small></button>`).join('');
+          lines+=displayOrder(r.range.cands).map(c=>`<button class="pl go" data-pick="${esc(c.key)}" title="내 액션으로 기록"><i style="background:${col[c.key]}"></i>${esc(shortLabel(c))}${c.custom?' ✎':''}<small>${((hf?hf.get(c.key):ag.get(c.key))*100).toFixed(0)}%</small></button>`).join('');
         } else if(hero) lines+=`<div class="pl">${ui.running?'계산 중…':'내 차례'}</div>`;
+        if(hero){ const L=legalActions(st,p), ex=(store.extraSizes||{})[st.street]||[];
+          if(L.canBet||L.canRaise) lines+=`<div class="cin" title="이 총액(bb)을 후보에 추가해 빈도·EV를 계산해요"><input type="number" id="hsz" step="any" min="0" placeholder="bb"><button data-act="addsize">사이즈 추가</button></div>${ex.length?`<div class="cin"><span>추가: ${ex.map(fmt).join(', ')}bb</span><button class="mb" data-act="clearsizes">지우기</button></div>`:''}`; }
         else { const L=legalActions(st,p), pre=st.street==='preflop', rc=st.raiseCount; let sizes=[];
           if(L.canBet||L.canRaise){ if(pre&&rc===0) sizes=[2.2,2.5]; else if(pre) sizes=[rc===1?3:2.2,rc===1?4:2.5].map(x=>Math.round(st.currentBet*x*10)/10); else if(L.canBet) sizes=[0.33,0.75].map(x=>Math.round(st.pot*x*10)/10); else sizes=[2.5,3.5].map(x=>Math.round(st.currentBet*x*10)/10); sizes=sizes.filter(t=>t>=(L.canBet?L.minBetTo:L.minRaiseTo)-1e-9&&t<L.maxTo-1e-9); }
           if(L.canFold) lines+=`<button class="pl go" data-do="fold"><i style="background:#3f7cc0"></i>폴드</button>`;
@@ -1238,6 +1251,7 @@ function topBar(spot,info){
           if(L.canCall) lines+=`<button class="pl go" data-do="call"><i style="background:#5ab966"></i>콜 ${fmt(L.callAmt)}</button>`;
           sizes.forEach(t=>lines+=`<button class="pl go" data-doto="${t}" data-kind="${L.canBet?'bet':'raise'}"><i style="background:#cf4a4a"></i>${L.canBet?'벳':raiseLabelKo(st.street,rc+1)} ${fmt(t)}</button>`);
           if(L.canAllin) lines+=`<button class="pl go" data-do="allin"><i style="background:#7d1d1d"></i>올인 ${fmt(L.maxTo)}</button>`;
+          if(L.canBet||L.canRaise) lines+=`<div class="cin" title="${L.canBet?'벳':'레이즈'} 총액을 bb로 입력 (최소 ${fmt(L.canBet?L.minBetTo:L.minRaiseTo)}bb)"><input type="number" id="csz" step="any" min="0" placeholder="${fmt(L.canBet?L.minBetTo:L.minRaiseTo)}"><span>bb</span><button data-act="customdo" data-kind="${L.canBet?'bet':'raise'}">${L.canBet?'벳':raiseLabelKo(st.street,rc+1)}</button></div>`;
         }
       } else if(!mine.length&&!p.folded) lines+=`<div class="pl">${p.allIn?'올인':pos==='BB'&&st.street==='preflop'?'BB 1':pos==='SB'&&st.street==='preflop'?'SB 0.5':'대기'}</div>`;
     }
@@ -1494,6 +1508,9 @@ app.addEventListener('click',async e=>{
   else if(d.row){ ui.open.has(d.row)?ui.open.delete(d.row):ui.open.add(d.row); }
   else if(d.rg!==undefined&&e.target.closest('#toolgrid')){ try{ const w=parseRange(ui.tool.text), i=+d.rg; w[i]=w[i]===0?0.5:w[i]===0.5?1:0; ui.tool.text=formatRange(w); }catch(err){} }
   else if(d.ex){ loadStore(EXAMPLES[+d.ex].make()); ui.drawer=false; }
+  else if(d.act==='customdo'){ const v=+($('csz')?.value), rp=replaySpot(spotFromStore(),store.street); if(!rp.toAct) return; if(!(v>0)){ ui.msg='금액(bb)을 입력하세요'; } else pushAction({street:store.street,position:rp.toAct,type:d.kind,toBB:Math.round(v*100)/100}); }
+  else if(d.act==='addsize'){ const v=Math.round(+($('hsz')?.value)*10)/10; if(!(v>0)){ ui.msg='추가할 사이즈(bb)를 입력하세요'; } else { const ex=store.extraSizes=store.extraSizes||{}; const a=ex[store.street]=ex[store.street]||[]; if(!a.includes(v)) a.push(v); ui.msg=''; } }
+  else if(d.act==='clearsizes'){ if(store.extraSizes) delete store.extraSizes[store.street]; }
   else if(d.act==='drawer'){ ui.drawer=!ui.drawer; }
   else if(d.act==='pickdone'){ ui.pick=false; }
   else if(d.act==='clearcards'){ SLOT_KEYS.forEach(k=>store.slots[k]=null); store.active='h0'; ui.results={}; ui.sel=null; }
@@ -1508,6 +1525,7 @@ app.addEventListener('click',async e=>{
   else return;
   render();
 });
+app.addEventListener('keydown',e=>{ if(e.key!=='Enter') return; const id=e.target.id; if(id==='csz') e.target.closest('.cin')?.querySelector('[data-act=customdo]')?.click(); else if(id==='hsz') e.target.closest('.cin')?.querySelector('[data-act=addsize]')?.click(); });
 app.addEventListener('input',e=>{ if(e.target.id==='toolText'){ ui.tool.text=e.target.value; try{ const w=parseRange(ui.tool.text); $('toolgrid').innerHTML=rangeGrid(w,{editable:ui.tool.edit}); $('toolpct').textContent=rangePercent(w).toFixed(1)+'%'; $('toolerr').textContent=''; }catch(err){ $('toolerr').textContent=err.message; } } });
 
 (async()=>{
