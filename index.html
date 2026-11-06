@@ -167,8 +167,19 @@ ul.tight{margin:6px 0;padding-left:20px}
 .tset select,.tset input[type=number],.tset input[type=text]{min-height:30px;padding:2px 6px;font-size:.85rem}
 .tset input[type=number]{width:72px}
 .tset input[type=checkbox]{min-height:0}
-.cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(122px,1fr));gap:6px}
-.cols .pcol{min-width:0}
+.colzone{display:flex;flex-direction:column;gap:6px;min-width:0}
+.cstrip{display:flex;flex-wrap:wrap;gap:6px}
+.pchip{display:flex;align-items:center;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:3px 4px}
+.pchip.cur{border:2px solid var(--acc)}
+.pchip.out{opacity:.55}
+.pcopen{display:flex;align-items:center;gap:6px;min-height:32px;padding:2px 8px;border:0;background:transparent;font-size:.82rem}
+.pcopen b{color:var(--sub)}.pcopen span{font-weight:700}.pcopen em{font-style:normal;color:var(--sub);background:#333944;border-radius:4px;padding:1px 6px}
+.pchip.cur .pcopen em{color:var(--acc);background:transparent;font-weight:700}
+.pcopen i{font-style:normal;color:var(--sub)}
+.cexp{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px}
+.cexp .pcol{min-width:0}
+.cexp .pcol.hero{grid-column:span 2}
+@media(max-width:420px){.cexp .pcol.hero{grid-column:auto}}
 button.seat{padding:0;min-width:0;min-height:0;cursor:pointer;font:inherit;font-size:.72rem;font-weight:700}
 button.seat:hover{border-color:var(--acc);filter:brightness(1.2)}
 .plist.wide{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px;margin-bottom:6px}
@@ -1106,7 +1117,7 @@ const SLOT_KEYS=['h0','h1','f0','f1','f2','t','r'], SLOT_NAMES={h0:'내 카드',
 let store=defaultStore();
 // 기본값: 6인 · BB 200칩(SB 100) · BB 앤티 · 시작 스택 70,000칩(=350bb)
 function defaultStore(){ const stacks={}; POSITIONS[6].forEach(p=>stacks[p]=350); return {n:6,heroPos:'BTN',unit:'chips',bbChips:200,sbBB:0.5,anteOn:true,icmOn:true,points:[8,5,3,2,1,0],extraSizes:{},folded:{},stacks,slots:{h0:null,h1:null,f0:null,f1:null,f2:null,t:null,r:null},actions:[],street:'preflop',active:'h0'}; }
-const ui={rtab:'overview',results:{},running:false,runKey:null,errKey:null,progress:0,error:'',msg:'',tab:'strategy',sel:null,focus:null,pick:false,drawer:false,vSel:0,open:new Set(),tool:{text:'22+, A2s+, KTo+, QJs, 76s:0.5',edit:false},saveMsg:''};
+const ui={rtab:'overview',results:{},running:false,runKey:null,errKey:null,progress:0,error:'',msg:'',tab:'strategy',sel:null,focus:null,pick:false,drawer:false,vSel:0,openCols:new Set(),open:new Set(),tool:{text:'22+, A2s+, KTo+, QJs, 76s:0.5',edit:false},saveMsg:''};
 const cache=new Map();
 
 function spotFromStore(){
@@ -1245,7 +1256,7 @@ const miniCard=c=>`<span class="mini su${c&3}">${RANK_CH[c>>2]}${SUIT_SYM[c&3]}<
 
 function topBar(spot,info){
   const rp=info.rp||replaySpot(spot,store.street), st=rp.state, toAct=rp.errors.length?null:rp.toAct, r=ui.results[store.street];
-  const cols=POSITIONS[store.n].map(pos=>{
+  const colsArr=POSITIONS[store.n].map(pos=>{
     const p=getP(st,pos), hero=pos===store.heroPos, mine=st.history.filter(a=>a.street===st.street&&a.pos===pos);
     let lines='', cls='';
     if(p.folded&&!mine.some(a=>a.type==='fold')){ lines=`<div class="pl sel">폴드</div>`; cls='out'; }
@@ -1272,8 +1283,15 @@ function topBar(spot,info){
     const head=`<div class="ph"><span>${pos}${hero?'★':''}</span>${out&&!store.icmOn?'<span class="sub">–</span>':`<input type="number" min="0" step="any" data-stack="${pos}" value="${toUnit(store.stacks[pos])}" title="${pos} 시작 스택(${store.unit==='bb'?'bb':'칩'})${out?' · 폴드했어도 ICM 계산에 필요':''}">`}</div>`;
     const left=!out&&Math.abs(p.stack-store.stacks[pos])>1e-9?`<div class="left">남은 ${fmt(p.stack)}bb</div>`:'';
     const btns=hero?`<div class="pbtns"><span class="sub" style="font-size:.74rem">내 자리</span></div>`:`<div class="pbtns"><button class="mb" data-sethero="${pos}" title="이 자리를 내 자리로">나로</button><button class="mb${out?' on':''}" data-fold="${pos}" title="${out?'폴드 취소':store.icmOn?'이미 폴드한 자리 (ICM용 스택은 남겨 두세요)':'이미 폴드한 자리 (스택 입력 불필요)'}">${out?'폴드 취소':'폴드'}</button></div>`;
-    return `<div class="pcol ${cls}${hero?' hero':''}">${head}${left}${btns}${lines}</div>`;
-  }).join('');
+    // 내 자리가 아니면 기본으로 접음 → 칩(포지션·스택·최근 액션)만 표시, ▸로 다시 열기
+    const last=mine[mine.length-1], st1=p.folded?'폴드':pos===toAct?'차례':p.allIn?'올인':last?(last.type==='bet'||last.type==='raise'?`${last.label} ${fmt(last.to)}`:last.type==='call'?'콜':last.label):pos==='BB'&&st.street==='preflop'?'BB 1':pos==='SB'&&st.street==='preflop'?'SB 0.5':'대기';
+    const quick=pos===toAct&&!hero?(()=>{ const L=legalActions(st,p); return (L.canFold?`<button class="mb" data-do="fold" title="${pos} 폴드 기록">폴드</button>`:'')+(L.canCheck?`<button class="mb" data-do="check">체크</button>`:''); })():'';
+    const collapsed=!hero&&!ui.openCols.has(pos);
+    const chip=`<div class="pchip ${cls}${p.folded?' out':''}"><button class="pcopen" data-colopen="${pos}" title="${pos} 칸 열기"><b>${pos}</b><span>${fmt(p.stack)}</span><em>${esc(st1)}</em><i>▸</i></button>${quick}</div>`;
+    const close=hero?'':`<button class="mb" data-colopen="${pos}" title="접기" style="margin-left:auto">▾ 접기</button>`;
+    return {collapsed,chip,html:`<div class="pcol ${cls}${hero?' hero':''}">${head}${left}<div style="display:flex;gap:4px">${btns}${close}</div>${lines}</div>`};
+  });
+  const cols=`${colsArr.some(c=>c.collapsed)?`<div class="cstrip">${colsArr.filter(c=>c.collapsed).map(c=>c.chip).join('')}</div>`:''}<div class="cexp">${colsArr.filter(c=>!c.collapsed).map(c=>c.html).join('')}</div>`;
   const s=store;
   const tset=`<div class="tset"><b style="color:var(--ink)">토너먼트</b>
     <label>인원<select data-f="n">${[2,3,4,5,6].map(n=>`<option value="${n}"${n===s.n?' selected':''}>${n}인</option>`).join('')}</select></label>
@@ -1283,7 +1301,7 @@ function topBar(spot,info){
     <label title="칩을 순위 점수 가치로 바꿔 계산 (탈락 위험 반영)"><input type="checkbox" data-f="icmOn"${s.icmOn?' checked':''}>ICM</label>
     ${s.icmOn?`<label title="남은 ${s.n}명의 1등부터 ${s.n}등까지 점수 (쉼표로 구분)">1~${s.n}등<input type="text" data-f="points" value="${(s.points||[]).slice(0,s.n).join(',')}" style="width:96px"></label>`:''}
     <button data-act="drawer" class="mb${ui.drawer?' on':''}" title="예제 · 저장 · 공유 · 도구">⋯ 예제·저장</button></div>`;
-  return `<div class="topzone"><div class="tbox">${tset}${tableCore(spot,info)}<p class="sub" style="margin:0;text-align:center">자리를 누르면 내 포지션이 바뀌어요 · 카드 칸을 누르면 카드 선택</p></div><div class="cols">${cols}</div></div>`;
+  return `<div class="topzone"><div class="tbox">${tset}${tableCore(spot,info)}<p class="sub" style="margin:0;text-align:center">자리를 누르면 내 포지션이 바뀌어요 · 카드 칸을 누르면 카드 선택</p></div><div class="colzone">${cols}</div></div>`;
 }
 function tslot(k,extra=''){ const v=store.slots[k], c=v?cid(v):-1, act=ui.pick&&store.active===k; return `<button class="tslot${act?' active':''}${v?' cardface su'+(c&3):''}${extra}" data-slot="${k}" title="${SLOT_NAMES[k]} (누르면 카드 선택)">${v?cardHtml(c):SLOT_NAMES[k].replace(' ','<br>')}</button>`; }
 function deckSheet(){
@@ -1493,7 +1511,7 @@ app.addEventListener('change',e=>{
   const t=e.target, f=t.dataset.f;
   if(t.dataset.stack){ store.stacks[t.dataset.stack]=Math.max(0.1,fromUnit(+t.value||0.1)); ui.results={}; }
   else if(f==='n') resetForN(+t.value);
-  else if(f==='heroPos'){ store.heroPos=t.value; delete store.folded[t.value]; ui.results={}; }
+  else if(f==='heroPos'){ ui.openCols=new Set(); store.heroPos=t.value; delete store.folded[t.value]; ui.results={}; }
   else if(f==='unit') store.unit=t.value;
   else if(f==='bbChips'){ const old=store.bbChips; store.bbChips=Math.max(1,+t.value||1); if(store.unit==='chips'){ for(const k in store.stacks) store.stacks[k]=store.stacks[k]*old/store.bbChips; } }
   else if(f==='anteOn'){ store.anteOn=t.checked; ui.results={}; }
@@ -1516,7 +1534,8 @@ app.addEventListener('click',async e=>{
   else if(d.pick){ const r=ui.results[store.street]; if(!r) return; const x=r.range.cands.find(a=>a.key===d.pick); if(!x) return; pushAction({street:store.street,position:store.heroPos,type:x.kind,toBB:x.kind==='bet'||x.kind==='raise'?x.toBB:undefined}); ui.focus=null; }
   else if(d.cell!==undefined){ const i=+d.cell; ui.sel=ui.sel===i?null:i; }
   else if(d.focus){ ui.focus=ui.focus===d.focus?null:d.focus; }
-  else if(d.sethero){ store.heroPos=d.sethero; delete store.folded[d.sethero]; ui.results={}; ui.sel=null; ui.msg=''; const rp=replaySpot(spotFromStore(),'river'); if(rp.errors.length){ store.actions=[]; store.street='preflop'; ui.msg='내 자리를 바꿔서 액션 기록을 초기화했어요'; } }
+  else if(d.colopen){ const q=d.colopen; ui.openCols.has(q)?ui.openCols.delete(q):ui.openCols.add(q); }
+  else if(d.sethero){ ui.openCols=new Set(); store.heroPos=d.sethero; delete store.folded[d.sethero]; ui.results={}; ui.sel=null; ui.msg=''; const rp=replaySpot(spotFromStore(),'river'); if(rp.errors.length){ store.actions=[]; store.street='preflop'; ui.msg='내 자리를 바꿔서 액션 기록을 초기화했어요'; } }
   else if(d.tab){ ui.tab=d.tab; }
   else if(d.rtab){ ui.rtab=d.rtab; }
   else if(d.vsel!==undefined){ ui.vSel=+d.vsel; }
