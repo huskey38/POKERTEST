@@ -49,6 +49,7 @@ button.on{outline:2px solid var(--acc)}
 .pc.info .pa{background:transparent;color:var(--sub);min-width:0;padding:0}
 /* 카드/스트리트 줄 */
 .brow{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:8px 0}
+.brow .stabs{margin-left:0}
 .grp{display:flex;gap:4px;align-items:center}
 .grp .lbl{font-size:.75rem;color:var(--sub);margin-right:2px;writing-mode:horizontal-tb}
 .slot{min-width:42px;width:42px;height:54px;padding:0;border:2px dashed var(--line);border-radius:6px;background:var(--panel2);font-weight:700;color:var(--sub);font-size:.7rem}
@@ -175,7 +176,8 @@ ul.tight{margin:6px 0;padding-left:20px}
 .rtabs button{border:0;border-radius:6px 6px 0 0;background:transparent;color:var(--sub);font-weight:700}
 .rtabs button.on{outline:0;color:var(--ink);background:var(--panel2)}
 /* 테이블 뷰 */
-.twrap{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:10px;align-items:center}
+.twrap{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:10px;align-items:start}
+.twrap>div:first-child{min-width:0}
 @media(max-width:560px){.twrap{grid-template-columns:1fr}}
 .ptable{position:relative;aspect-ratio:1.75;margin:14px 18px}
 .ptable .felt{position:absolute;inset:6% 4%;border:3px solid #3a404a;border-radius:999px;background:radial-gradient(ellipse at center,#20252c 0%,#171a1f 70%)}
@@ -189,6 +191,21 @@ ul.tight{margin:6px 0;padding-left:20px}
 .chip.big i{background:#f2c14e}
 .dbtn{position:absolute;transform:translate(-50%,-50%);width:18px;height:18px;border-radius:50%;background:#fff;color:#000;font-size:.7rem;font-weight:800;display:flex;align-items:center;justify-content:center;z-index:3}
 .pcenter{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;font-weight:800;font-size:1.05rem}
+.ptop{text-align:center;font-weight:800;font-size:1.05rem;margin-top:2px}
+.ptop small{color:var(--sub);font-weight:600;font-size:.78rem;margin-left:6px}
+.ptable{margin:14px 18px 78px}
+.bslots{position:absolute;left:50%;top:54%;transform:translate(-50%,-50%);display:flex;gap:4px;align-items:center;z-index:2}
+.bslots .gap{width:6px}
+.tslot{width:38px;min-width:0;height:52px;min-height:0;padding:0;border:2px dashed #4a515c;border-radius:6px;background:#1d2127;color:var(--sub);font-size:.62rem;font-weight:700;line-height:1.1}
+.tslot.cardface{border:1px solid #9a9a9a;background:#f4f4f4;font-size:.92rem}
+.tslot.active{border-color:var(--acc);border-style:solid;box-shadow:0 0 0 2px var(--acc)}
+.tslot.lock{opacity:.35}
+.hcards{position:absolute;transform:translateX(-50%);display:flex;gap:4px;z-index:3}
+.hcards .tslot{width:42px;height:58px}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--panel);border-top:2px solid var(--acc);padding:10px 12px 14px;max-height:62vh;overflow:auto;box-shadow:0 -8px 24px #000c}
+.sheet .deck{margin:0 auto}
+@media(max-width:960px){.main>.panel:last-child{order:-1}}
+@media(max-width:560px){.ptable{aspect-ratio:1.25;margin:10px 10px 74px}.seat{width:50px;height:50px}.tslot{width:30px;height:42px;font-size:.55rem}.tslot.cardface{font-size:.78rem}.hcards .tslot{width:36px;height:50px}.ptop{font-size:.85rem}}
 .pcenter small{display:block;color:var(--sub);font-weight:600;font-size:.75rem}
 .pcenter .bd{display:flex;gap:2px;justify-content:center;margin-top:5px}
 .plist{display:flex;flex-direction:column;gap:6px}
@@ -1194,7 +1211,7 @@ function chartEquity(){
 /* ---------- 렌더 ---------- */
 function render(){
   const spot=spotFromStore(), info=streetInfo(spot,store.street);
-  $('app').innerHTML=topBar(spot,info)+boardRow(spot)+actionRow(spot,info)+(ui.drawer?`<div class="drawer">${secStorage()}${secTools()}</div>`:'')+mainArea(spot,info);
+  $('app').innerHTML=topBar(spot,info)+boardRow(spot)+actionRow(spot,info)+(ui.drawer?`<div class="drawer">${secStorage()}${secTools()}</div>`:'')+mainArea(spot,info)+deckSheet();
   document.querySelectorAll('.rgfill').forEach(el=>{ const r=ui.results[store.street]; if(!r) return; const v=r.range.villainRanges[+el.dataset.v]; if(v) el.innerHTML=rangeGrid(v.grid); });
   const t=$('toolgrid'); if(t){ try{ const w=parseRange(ui.tool.text); t.innerHTML=rangeGrid(w,{editable:ui.tool.edit}); $('toolpct').textContent=rangePercent(w).toFixed(1)+'%'; $('toolerr').textContent=''; }catch(e){ $('toolerr').textContent=e.message; } }
   scheduleAuto();
@@ -1241,14 +1258,15 @@ function topBar(spot,info){
     <button data-act="drawer" class="mb${ui.drawer?' on':''}" title="예제 · 저장 · 공유 · 도구">⋯ 예제·저장·도구</button></div>`;
   return `<div class="topbar">${tinfo}${cols}</div>`;
 }
+function tslot(k,extra=''){ const v=store.slots[k], c=v?cid(v):-1, act=ui.pick&&store.active===k; return `<button class="tslot${act?' active':''}${v?' cardface su'+(c&3):''}${extra}" data-slot="${k}" title="${SLOT_NAMES[k]} (누르면 카드 선택)">${v?cardHtml(c):SLOT_NAMES[k].replace(' ','<br>')}</button>`; }
+function deckSheet(){
+  if(!ui.pick) return '';
+  const used=usedCards(); let deck=''; for(let su=0;su<4;su++) for(let r=12;r>=0;r--){ const c=r*4+su, v=cstr(c); deck+=`<button data-card="${v}"${used.has(v)?' disabled':''} class="cardface su${su}">${cardHtml(c)}</button>`; }
+  return `<div class="sheet"><div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px"><b>${SLOT_NAMES[store.active]||''} 카드 선택</b><span class="sub">채워진 칸을 다시 누르면 비워져요</span><span><button data-act="clearcards" class="danger">모두 지우기</button> <button data-act="pickdone" class="pri">완료</button></span></div><div class="deck">${deck}</div></div>`;
+}
 function boardRow(spot){
-  const sl=store.slots, used=usedCards();
-  const slot=k=>{ const v=sl[k], c=v?cid(v):-1; return `<button class="slot${store.active===k&&ui.pick?' active':''}${v?' cardface su'+(c&3):''}" data-slot="${k}" title="${SLOT_NAMES[k]} (누르면 카드 선택)">${v?cardHtml(c):SLOT_NAMES[k].replace(' ','<br>')}</button>`; };
   const tabs=STREETS.map(s=>{ const inf=streetInfo(spot,s), has=!!ui.results[s], dis=!inf.ok; return `<button class="st${store.street===s?' on':''}" data-street="${s}"${dis?' disabled':''} title="${esc(dis?inf.reason:'')}"><b>${STREET_KO[s]}${has?' ✓':''}</b><small>${dis?esc(inf.reason):inf.error?'⚠ 액션 오류':inf.heroTurn?'내 차례':'진행 중'}</small></button>`; }).join('');
-  let h=`<div class="brow"><div class="grp"><span class="lbl">내 핸드</span>${slot('h0')}${slot('h1')}</div><div class="grp"><span class="lbl">플랍</span>${slot('f0')}${slot('f1')}${slot('f2')}</div><div class="grp"><span class="lbl">턴</span>${slot('t')}</div><div class="grp"><span class="lbl">리버</span>${slot('r')}</div><div class="stabs">${tabs}</div></div>`;
-  if(ui.pick){ let deck=''; for(let su=0;su<4;su++) for(let r=12;r>=0;r--){ const c=r*4+su, v=cstr(c); deck+=`<button data-card="${v}"${used.has(v)?' disabled':''} class="cardface su${su}">${cardHtml(c)}</button>`; }
-    h+=`<div class="deckwrap"><div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px"><span class="sub">${SLOT_NAMES[store.active]||''} 카드를 고르세요 · 채워진 칸을 다시 누르면 비워져요</span><span><button data-act="clearcards" class="danger">모두 지우기</button> <button data-act="pickdone" class="pri">완료</button></span></div><div class="deck">${deck}</div></div>`; }
-  return h;
+  return `<div class="brow"><div class="stabs">${tabs}</div><span class="sub">카드는 테이블에서 입력해요: 가운데 = 보드, 내 자리 아래 = 내 카드</span></div>`;
 }
 function hintText(spot,info){
   const r=ui.results[store.street], rp=info.rp;
@@ -1321,11 +1339,13 @@ function tableView(spot,info,r){
   const toAct=rp.errors.length?null:rp.toAct, order=postflopOrder(store.n), nb={preflop:0,flop:3,turn:4,river:5}[store.street], board=boardCards(spot).slice(0,nb).map(cid);
   const toCall=Math.max(0,st.currentBet-getP(st,hero).bet), po=toCall>0?Math.min(toCall,getP(st,hero).stack)/(st.pot+Math.min(toCall,getP(st,hero).stack))*100:0;
   const P=(i,rad)=>{ const a=Math.PI/2+(i-h)*2*Math.PI/n; return {x:50+rad*48*Math.cos(a),y:50+rad*46*Math.sin(a)}; };
-  let t=`<div class="ptable"><div class="felt"></div>`;
+  let t=`<div class="ptop">팟 ${fmt(st.pot)} bb${toCall>0?`<small>팟오즈 ${po.toFixed(1)}%</small>`:''}<small>${STREET_KO[store.street]}${store.anteOn?' · BB앤티 포함':''}</small></div><div class="ptable"><div class="felt"></div>`;
   pos.forEach((q,i)=>{ const p=getP(st,q), s1=P(i,1); t+=`<div class="seat${q===hero?' hero':''}${q===toAct?' cur':''}${p.folded?' out':''}" style="left:${s1.x}%;top:${s1.y}%" title="${q} · 스택 ${fmt(p.stack)}bb"><span>${q}</span><b>${fmt(p.stack)}</b></div>`;
-    if(p.bet>0){ const c=P(i,0.6); t+=`<div class="chip${q==='BB'||p.bet>1?' big':''}" style="left:${c.x}%;top:${c.y}%"><i></i>${fmt(p.bet)}</div>`; }
+    if(p.bet>0){ const c=P(i,0.74); t+=`<div class="chip${q==='BB'||p.bet>1?' big':''}" style="left:${c.x}%;top:${c.y}%"><i></i>${fmt(p.bet)}</div>`; }
     if(q==='BTN'||(n===2&&q==='BTN')){ const a=Math.PI/2+(i-h)*2*Math.PI/n+0.33, x=50+0.74*48*Math.cos(a), y=50+0.74*46*Math.sin(a); t+=`<div class="dbtn" style="left:${x}%;top:${y}%">D</div>`; } });
-  t+=`<div class="pcenter">${fmt(st.pot)} bb${toCall>0?` <small>팟오즈 ${po.toFixed(1)}%</small>`:''}<small>${STREET_KO[store.street]}${store.anteOn?' · BB앤티 포함':''}</small>${board.length?`<div class="bd">${board.map(miniCard).join('')}</div>`:''}</div></div>`;
+  const lockT=!(store.slots.f0&&store.slots.f1&&store.slots.f2), lockR=lockT||!store.slots.t;
+  t+=`<div class="bslots">${tslot('f0')}${tslot('f1')}${tslot('f2')}<span class="gap"></span>${tslot('t',lockT?' lock':'')}<span class="gap"></span>${tslot('r',lockR?' lock':'')}</div>`;
+  const hs1=P(h,1); t+=`<div class="hcards" style="left:${hs1.x}%;top:calc(${hs1.y}% + 32px)">${tslot('h0')}${tslot('h1')}</div></div>`;
   const live=pos.filter(q=>!getP(st,q).folded), hs=r?rangeStats(r.range):null;
   const ipOf=q=>live.filter(o=>o!==q).every(o=>order.indexOf(q)>order.indexOf(o));
   let list='<div class="plist">';
@@ -1333,7 +1353,7 @@ function tableView(spot,info,r){
     const eqv=isH?(hs?hs.eq:null):(hs&&live.length===2?1-hs.eq:null);
     list+=`<div class="pinfo"><div class="pt">${q}${isH?' ★':''}<span>${ipOf(q)?'IP':'OOP'}</span></div><div class="pv">${isH?`<div>EV<b>${hs?(hs.ev>=0?'+':'−')+Math.abs(hs.ev).toFixed(2):'–'}</b></div>`:`<div>승률<b>${eqv!=null?(eqv*100).toFixed(1)+'%':'–'}</b></div>`}<div>콤보<b>${isH?(hs?hs.combos.toFixed(0):'–'):(v?(v.pct*13.26).toFixed(0):'–')}</b></div>${isH?`<div>승률<b>${hs?(hs.eq*100).toFixed(1)+'%':'–'}</b></div><div>레인지<b>${r?r.range.heroRangePct.toFixed(0)+'%':'–'}</b></div>`:''}</div></div>`; }
   list+=`</div>`;
-  return `<div class="twrap">${t}${list}</div><p class="sub" style="margin:2px 0 0">★ = 나 · EV는 내 레인지 전체 평균(${r&&r.range.icm?'ICM 환산 ':''}bb, 지금 폴드 = 0 기준) · 상대 승률은 헤즈업일 때만 표시${store.icmOn?` · ICM 점수 ${(store.points||[]).slice(0,store.n).join('/')}`:''}</p>`;
+  return `<div class="twrap"><div>${t}</div>${list}</div><p class="sub" style="margin:2px 0 0">★ = 나 · EV는 내 레인지 전체 평균(${r&&r.range.icm?'ICM 환산 ':''}bb, 지금 폴드 = 0 기준) · 상대 승률은 헤즈업일 때만 표시${store.icmOn?` · ICM 점수 ${(store.points||[]).slice(0,store.n).join('/')}`:''}</p>`;
 }
 function equityView(r){
   if(!r) return `<p class="sub">내 차례에 계산되면 내 레인지의 승률 분포가 나와요.</p>`;
@@ -1457,7 +1477,7 @@ app.addEventListener('change',e=>{
 });
 app.addEventListener('click',async e=>{
   const b=e.target.closest('button,tr.main'); if(!b||b.disabled) return; const d=b.dataset;
-  if(d.slot){ if(store.slots[d.slot]&&store.active===d.slot&&ui.pick) store.slots[d.slot]=null; store.active=d.slot; ui.pick=true; ui.sel=null; }
+  if(d.slot){ if(store.slots[d.slot]&&store.active===d.slot&&ui.pick) store.slots[d.slot]=null; store.active=d.slot; ui.pick=true; ui.sel=null; ui.rtab='table'; }
   else if(d.card){ setCard(d.card); ui.sel=heroClassIdx(); }
   else if(d.fold){ const q=d.fold; if(store.folded[q]) delete store.folded[q]; else { store.folded[q]=true; store.actions=store.actions.filter(a=>a.position!==q); } ui.results={}; ui.msg=''; }
   else if(d.street){ store.street=d.street; ui.msg=''; ui.focus=null; }
