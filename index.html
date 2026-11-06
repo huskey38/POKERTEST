@@ -176,10 +176,20 @@ ul.tight{margin:6px 0;padding-left:20px}
 .pcopen b{color:var(--sub)}.pcopen span{font-weight:700}.pcopen em{font-style:normal;color:var(--sub);background:#333944;border-radius:4px;padding:1px 6px}
 .pchip.cur .pcopen em{color:var(--acc);background:transparent;font-weight:700}
 .pcopen i{font-style:normal;color:var(--sub)}
+.stag{position:absolute;display:flex;gap:3px;z-index:4;white-space:nowrap}
+.stag button{min-height:24px;min-width:0;padding:1px 7px;font-size:.72rem;font-weight:700;border-radius:5px;border:1px solid var(--line);background:#2b3039;color:var(--sub)}
+.stag.cur .topen{border-color:var(--acc);color:var(--acc);background:#1d2a20}
+.stag .tq{background:#2c3a4d;color:#c9d6e6;border-color:#3f7cc0}
+.stag .topen.on{color:var(--ink);border-color:var(--ink)}
+.stag.out{opacity:.6}
+.ptable{margin-top:60px!important}
+.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:2px}
+.pgrid.q{gap:4px;margin:2px 0 4px}
+.pgrid.q .mb{width:100%}
 .cexp{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px}
 .cexp .pcol{min-width:0}
 .cexp .pcol.hero{grid-column:span 2}
-@media(max-width:420px){.cexp .pcol.hero{grid-column:auto}}
+@media(max-width:420px){.cexp .pcol.hero{grid-column:1/-1}}
 button.seat{padding:0;min-width:0;min-height:0;cursor:pointer;font:inherit;font-size:.72rem;font-weight:700}
 button.seat:hover{border-color:var(--acc);filter:brightness(1.2)}
 .plist.wide{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px;margin-bottom:6px}
@@ -1254,6 +1264,23 @@ function render(){
 function cardHtml(c){ const r=RANK_CH[c>>2]==='T'?'10':RANK_CH[c>>2]; return `<span>${r}</span><span>${SUIT_SYM[c&3]}</span>`; }
 const miniCard=c=>`<span class="mini su${c&3}">${RANK_CH[c>>2]}${SUIT_SYM[c&3]}</span>`;
 
+// 베팅 사이즈 프리셋(총액 bb): 프리플랍 오픈 bb, 3벳 이후 배수, 포스트플랍 팟 비율
+function presetSizes(st,L){
+  const pre=st.street==='preflop', rc=st.raiseCount, r1=x=>Math.round(x*10)/10; let v=[];
+  if(!(L.canBet||L.canRaise)) return [];
+  if(pre&&rc===0) v=[2,2.2,2.5,3,4];
+  else if(pre&&rc===1) v=[2.5,3,3.5,4,5].map(x=>r1(st.currentBet*x));
+  else if(pre) v=[2.2,2.5,3].map(x=>r1(st.currentBet*x));
+  else if(L.canBet) v=[0.25,0.33,0.5,0.75,1,1.5].map(x=>r1(st.pot*x));
+  else v=[2.5,3,4].map(x=>r1(st.currentBet*x));
+  const min=L.canBet?L.minBetTo:L.minRaiseTo; return [...new Set(v)].filter(t=>t>=min-1e-9&&t<L.maxTo-1e-9);
+}
+function seatStatus(st,pos,toAct){
+  const p=getP(st,pos), mine=st.history.filter(a=>a.street===st.street&&a.pos===pos), last=mine[mine.length-1];
+  if(p.folded) return '폴드'; if(pos===toAct) return '차례'; if(p.allIn) return '올인';
+  if(last) return last.type==='bet'||last.type==='raise'?`${last.label} ${fmt(last.to)}`:last.type==='call'?'콜':last.label;
+  if(st.street==='preflop'&&pos==='BB') return 'BB 1'; if(st.street==='preflop'&&pos==='SB') return 'SB 0.5'; return '대기';
+}
 function topBar(spot,info){
   const rp=info.rp||replaySpot(spot,store.street), st=rp.state, toAct=rp.errors.length?null:rp.toAct, r=ui.results[store.street];
   const colsArr=POSITIONS[store.n].map(pos=>{
@@ -1267,13 +1294,13 @@ function topBar(spot,info){
           lines+=displayOrder(r.range.cands).map(c=>`<button class="pl go" data-pick="${esc(c.key)}" title="내 액션으로 기록"><i style="background:${col[c.key]}"></i>${esc(shortLabel(c))}${c.custom?' ✎':''}<small>${((hf?hf.get(c.key):ag.get(c.key))*100).toFixed(0)}%</small></button>`).join('');
         } else if(hero) lines+=`<div class="pl">${ui.running?'계산 중…':'내 차례'}</div>`;
         if(hero){ const L=legalActions(st,p), ex=(store.extraSizes||{})[st.street]||[];
-          if(L.canBet||L.canRaise) lines+=`<div class="cin" title="이 총액(bb)을 후보에 추가해 빈도·EV를 계산해요"><input type="number" id="hsz" step="any" min="0" placeholder="bb"><button data-act="addsize">사이즈 추가</button></div>${ex.length?`<div class="cin"><span>추가: ${ex.map(fmt).join(', ')}bb</span><button class="mb" data-act="clearsizes">지우기</button></div>`:''}`; }
-        else { const L=legalActions(st,p), pre=st.street==='preflop', rc=st.raiseCount; let sizes=[];
-          if(L.canBet||L.canRaise){ if(pre&&rc===0) sizes=[2.2,2.5]; else if(pre) sizes=[rc===1?3:2.2,rc===1?4:2.5].map(x=>Math.round(st.currentBet*x*10)/10); else if(L.canBet) sizes=[0.33,0.75].map(x=>Math.round(st.pot*x*10)/10); else sizes=[2.5,3.5].map(x=>Math.round(st.currentBet*x*10)/10); sizes=sizes.filter(t=>t>=(L.canBet?L.minBetTo:L.minRaiseTo)-1e-9&&t<L.maxTo-1e-9); }
+          const have=new Set((r?r.range.cands:[]).map(c=>c.toBB)), quickAdd=presetSizes(st,L).filter(t=>!have.has(t)&&!ex.includes(t));
+          if(L.canBet||L.canRaise) lines+=`${quickAdd.length?`<div class="sub" style="font-size:.72rem;margin-top:6px">사이즈 후보 추가 (누르면 계산)</div><div class="pgrid q">${quickAdd.map(t=>`<button class="mb" data-addsz="${t}">+ ${fmt(t)}bb</button>`).join('')}</div>`:''}<div class="cin" title="이 총액(bb)을 후보에 추가해 빈도·EV를 계산해요"><input type="number" id="hsz" step="any" min="0" placeholder="bb"><button data-act="addsize">사이즈 추가</button></div>${ex.length?`<div class="cin"><span>추가: ${ex.map(fmt).join(', ')}bb</span><button class="mb" data-act="clearsizes">지우기</button></div>`:''}`; }
+        else { const L=legalActions(st,p), rc=st.raiseCount, sizes=presetSizes(st,L);
           if(L.canFold) lines+=`<button class="pl go" data-do="fold"><i style="background:#3f7cc0"></i>폴드</button>`;
           if(L.canCheck) lines+=`<button class="pl go" data-do="check"><i style="background:#5ab966"></i>체크</button>`;
           if(L.canCall) lines+=`<button class="pl go" data-do="call"><i style="background:#5ab966"></i>콜 ${fmt(L.callAmt)}</button>`;
-          sizes.forEach(t=>lines+=`<button class="pl go" data-doto="${t}" data-kind="${L.canBet?'bet':'raise'}"><i style="background:#cf4a4a"></i>${L.canBet?'벳':raiseLabelKo(st.street,rc+1)} ${fmt(t)}</button>`);
+          if(sizes.length) lines+=`<div class="pgrid">${sizes.map(t=>`<button class="pl go" data-doto="${t}" data-kind="${L.canBet?'bet':'raise'}"><i style="background:#cf4a4a"></i>${L.canBet?'벳':raiseLabelKo(st.street,rc+1)} ${fmt(t)}</button>`).join('')}</div>`;
           if(L.canAllin) lines+=`<button class="pl go" data-do="allin"><i style="background:#7d1d1d"></i>올인 ${fmt(L.maxTo)}</button>`;
           if(L.canBet||L.canRaise) lines+=`<div class="cin" title="${L.canBet?'벳':'레이즈'} 총액을 bb로 입력 (최소 ${fmt(L.canBet?L.minBetTo:L.minRaiseTo)}bb)"><input type="number" id="csz" step="any" min="0" placeholder="${fmt(L.canBet?L.minBetTo:L.minRaiseTo)}"><span>bb</span><button data-act="customdo" data-kind="${L.canBet?'bet':'raise'}">${L.canBet?'벳':raiseLabelKo(st.street,rc+1)}</button></div>`;
         }
@@ -1291,7 +1318,7 @@ function topBar(spot,info){
     const close=hero?'':`<button class="mb" data-colopen="${pos}" title="접기" style="margin-left:auto">▾ 접기</button>`;
     return {collapsed,chip,html:`<div class="pcol ${cls}${hero?' hero':''}">${head}${left}<div style="display:flex;gap:4px">${btns}${close}</div>${lines}</div>`};
   });
-  const cols=`${colsArr.some(c=>c.collapsed)?`<div class="cstrip">${colsArr.filter(c=>c.collapsed).map(c=>c.chip).join('')}</div>`:''}<div class="cexp">${colsArr.filter(c=>!c.collapsed).map(c=>c.html).join('')}</div>`;
+  const cols=`<div class="cexp">${colsArr.filter(c=>!c.collapsed).map(c=>c.html).join('')}</div>`;
   const s=store;
   const tset=`<div class="tset"><b style="color:var(--ink)">토너먼트</b>
     <label>인원<select data-f="n">${[2,3,4,5,6].map(n=>`<option value="${n}"${n===s.n?' selected':''}>${n}인</option>`).join('')}</select></label>
@@ -1301,7 +1328,7 @@ function topBar(spot,info){
     <label title="칩을 순위 점수 가치로 바꿔 계산 (탈락 위험 반영)"><input type="checkbox" data-f="icmOn"${s.icmOn?' checked':''}>ICM</label>
     ${s.icmOn?`<label title="남은 ${s.n}명의 1등부터 ${s.n}등까지 점수 (쉼표로 구분)">1~${s.n}등<input type="text" data-f="points" value="${(s.points||[]).slice(0,s.n).join(',')}" style="width:96px"></label>`:''}
     <button data-act="drawer" class="mb${ui.drawer?' on':''}" title="예제 · 저장 · 공유 · 도구">⋯ 예제·저장</button></div>`;
-  return `<div class="topzone"><div class="tbox">${tset}${tableCore(spot,info)}<p class="sub" style="margin:0;text-align:center">자리를 누르면 내 포지션이 바뀌어요 · 카드 칸을 누르면 카드 선택</p></div><div class="colzone">${cols}</div></div>`;
+  return `<div class="topzone"><div class="tbox">${tset}${tableCore(spot,info)}<p class="sub" style="margin:0;text-align:center">자리 = 내 자리로 지정 · 자리 옆 꼬리표 ▸ = 그 자리 액션 칸 열기 · 카드 칸 = 카드 선택</p></div><div class="colzone">${cols}</div></div>`;
 }
 function tslot(k,extra=''){ const v=store.slots[k], c=v?cid(v):-1, act=ui.pick&&store.active===k; return `<button class="tslot${act?' active':''}${v?' cardface su'+(c&3):''}${extra}" data-slot="${k}" title="${SLOT_NAMES[k]} (누르면 카드 선택)">${v?cardHtml(c):SLOT_NAMES[k].replace(' ','<br>')}</button>`; }
 function deckSheet(){
@@ -1387,7 +1414,10 @@ function tableCore(spot,info){
   let t=`<div class="ptop">팟 ${fmt(st.pot)} bb${toCall>0?`<small>팟오즈 ${po.toFixed(1)}%</small>`:''}<small>${STREET_KO[store.street]}${store.anteOn?' · BB앤티 포함':''}</small></div><div class="ptable"><div class="felt"></div>`;
   pos.forEach((q,i)=>{ const p=getP(st,q), s1=P(i,1), cls=`seat${q===hero?' hero':''}${q===toAct?' cur':''}${p.folded?' out':''}`, inner=`<span>${q}${q===hero?'★':''}</span><b>${fmt(p.stack)}</b>`;
     t+=q===hero?`<div class="${cls}" style="left:${s1.x}%;top:${s1.y}%" title="내 자리 · ${q} · 스택 ${fmt(p.stack)}bb">${inner}</div>`:`<button class="${cls}" data-sethero="${q}" style="left:${s1.x}%;top:${s1.y}%" title="${q}를 내 자리로 · 스택 ${fmt(p.stack)}bb">${inner}</button>`;
-    if(p.bet>0){ const c=P(i,0.74); t+=`<div class="chip${q==='BB'||p.bet>1?' big':''}" style="left:${c.x}%;top:${c.y}%"><i></i>${fmt(p.bet)}</div>`; }
+    if(p.bet>0){ const c=P(i,0.7); t+=`<div class="chip${q==='BB'||p.bet>1?' big':''}" style="left:${c.x}%;top:${c.y}%"><i></i>${fmt(p.bet)}</div>`; }
+    if(q!==hero){ const stx=seatStatus(st,q,toAct), open=ui.openCols.has(q), up=s1.y<50, L=q===toAct?legalActions(st,p):null;
+      const quick=L?(L.canFold?`<button class="tq" data-do="fold">폴드</button>`:'')+(L.canCheck?`<button class="tq" data-do="check">체크</button>`:''):'';
+      t+=`<div class="stag${q===toAct?' cur':''}${p.folded?' out':''}" style="left:${s1.x}%;top:calc(${s1.y}% ${up?'- 31px':'+ 31px'});transform:translate(-50%,${up?'-100%':'0'})"><button class="topen${open?' on':''}" data-colopen="${q}" title="${q} 액션 칸 ${open?'닫기':'열기'}">${esc(stx)} ${open?'▾':'▸'}</button>${quick}</div>`; }
     if(q==='BTN'){ const a=Math.PI/2+(i-h)*2*Math.PI/n+0.33, x=50+0.74*48*Math.cos(a), y=50+0.74*46*Math.sin(a); t+=`<div class="dbtn" style="left:${x}%;top:${y}%">D</div>`; } });
   const lockT=!(store.slots.f0&&store.slots.f1&&store.slots.f2), lockR=lockT||!store.slots.t;
   t+=`<div class="bslots">${tslot('f0')}${tslot('f1')}${tslot('f2')}<span class="gap"></span>${tslot('t',lockT?' lock':'')}<span class="gap"></span>${tslot('r',lockR?' lock':'')}</div>`;
@@ -1544,6 +1574,7 @@ app.addEventListener('click',async e=>{
   else if(d.ex){ loadStore(EXAMPLES[+d.ex].make()); ui.drawer=false; }
   else if(d.act==='customdo'){ const v=+($('csz')?.value), rp=replaySpot(spotFromStore(),store.street); if(!rp.toAct) return; if(!(v>0)){ ui.msg='금액(bb)을 입력하세요'; } else pushAction({street:store.street,position:rp.toAct,type:d.kind,toBB:Math.round(v*100)/100}); }
   else if(d.act==='addsize'){ const v=Math.round(+($('hsz')?.value)*10)/10; if(!(v>0)){ ui.msg='추가할 사이즈(bb)를 입력하세요'; } else { const ex=store.extraSizes=store.extraSizes||{}; const a=ex[store.street]=ex[store.street]||[]; if(!a.includes(v)) a.push(v); ui.msg=''; } }
+  else if(d.addsz){ const v=+d.addsz, ex=store.extraSizes=store.extraSizes||{}, a=ex[store.street]=ex[store.street]||[]; if(!a.includes(v)) a.push(v); }
   else if(d.act==='clearsizes'){ if(store.extraSizes) delete store.extraSizes[store.street]; }
   else if(d.act==='drawer'){ ui.drawer=!ui.drawer; }
   else if(d.act==='pickdone'){ ui.pick=false; }
